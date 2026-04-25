@@ -17,7 +17,7 @@ export function createLogger(opts: LoggerOptions): Logger {
 
   return pino({
     level: opts.level,
-    base: undefined,
+    base: null,
     timestamp: pino.stdTimeFunctions.isoTime,
     redact: {
       // Defense in depth: even if a private key sneaks into a log payload,
