@@ -22,6 +22,7 @@ import { discoverMarkets } from './marketdata/market-discovery.js';
 import { DefaultRiskManager } from './risk/risk-manager.js';
 import { WideSpreadMarketMaker } from './strategy/strategies/wide-spread-market-maker.js';
 import { SmartMoneyFollower } from './strategy/strategies/smart-money-follower.js';
+import { RewardedMarketMaker } from './strategy/strategies/rewarded-market-maker.js';
 import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
 import type { Strategy } from './strategy/strategy.js';
 import type { Market } from './domain/market.js';
@@ -319,6 +320,10 @@ async function loadMarkets(
 ): Promise<ReadonlyMap<string, Market>> {
   const ids = new Set<string>(config.strategy.markets);
 
+  // Map of conditionId -> rewards info, populated from discovery so the
+  // RewardedMarketMaker strategy can read it via Market.rewards.
+  const rewardsByMarketId = new Map<string, import('./domain/market.js').MarketRewards>();
+
   if (config.marketDiscovery.enabled) {
     const discovered = await discoverMarkets({
       gammaHost: config.marketDiscovery.gammaHost,
@@ -328,14 +333,28 @@ async function loadMarkets(
         minDaysToResolution: config.marketDiscovery.minDaysToResolution,
         minSpread: config.marketDiscovery.minSpread,
         maxSpread: config.marketDiscovery.maxSpread,
+        requireRewards: config.marketDiscovery.requireRewards,
         limit: config.marketDiscovery.limit,
       },
       clock,
       logger,
     });
-    for (const m of discovered) ids.add(m.conditionId);
+    for (const m of discovered) {
+      ids.add(m.conditionId);
+      if (m.rewardsDailyRateUsd > 0 && m.rewardsMaxSpread !== null && m.rewardsMinSize !== null) {
+        rewardsByMarketId.set(m.conditionId, {
+          dailyRateUsd: m.rewardsDailyRateUsd,
+          maxSpread: price(m.rewardsMaxSpread),
+          minSize: size(m.rewardsMinSize),
+        });
+      }
+    }
     logger.info(
-      { discovered: discovered.length, total: ids.size },
+      {
+        discovered: discovered.length,
+        withRewards: rewardsByMarketId.size,
+        total: ids.size,
+      },
       'main: market discovery merged with explicit STRATEGY_MARKETS',
     );
   }
@@ -348,9 +367,6 @@ async function loadMarkets(
     try {
       // eslint-disable-next-line no-await-in-loop
       const raw = (await client.getMarket(conditionId)) as RawMarket | { error?: string };
-      // The clob-client doesn't always throw on 4xx — it can return
-      // {error: "..."}. Fail loudly so the bot doesn't silently run with
-      // a half-broken market that has no outcomes to subscribe to.
       if ('error' in raw && raw.error) {
         throw new Error(`CLOB rejected market ${conditionId}: ${String(raw.error)}`);
       }
@@ -360,7 +376,8 @@ async function loadMarkets(
           `Market ${conditionId} returned no outcomes. Likely an invalid condition ID — verify with the Gamma API or enable MARKET_DISCOVERY_ENABLED=true.`,
         );
       }
-      out.set(conditionId, normalizeMarket(conditionId, raw as RawMarket));
+      const rewards = rewardsByMarketId.get(conditionId);
+      out.set(conditionId, normalizeMarket(conditionId, raw as RawMarket, rewards));
     } catch (err) {
       logger.error({ err, conditionId }, 'main: failed to fetch market metadata');
       throw err;
@@ -378,7 +395,11 @@ interface RawMarket {
   tokens?: ReadonlyArray<{ token_id: string; outcome: string }>;
 }
 
-function normalizeMarket(conditionId: string, raw: RawMarket): Market {
+function normalizeMarket(
+  conditionId: string,
+  raw: RawMarket,
+  rewards?: import('./domain/market.js').MarketRewards,
+): Market {
   return {
     conditionId,
     question: raw.question ?? '',
@@ -387,6 +408,7 @@ function normalizeMarket(conditionId: string, raw: RawMarket): Market {
     minOrderSize: size(Number(raw.minimum_order_size ?? 5)),
     endDate: raw.end_date_iso ? new Date(raw.end_date_iso) : new Date('2099-01-01'),
     category: raw.category ?? 'other',
+    ...(rewards ? { rewards } : {}),
   };
 }
 
@@ -403,6 +425,8 @@ function buildStrategy(config: Config): Strategy {
         executionMode: config.smartMoney.executionMode,
         perMarketCooldownMs: config.smartMoney.perMarketCooldownMs,
       });
+    case 'rewarded-market-maker':
+      return new RewardedMarketMaker();
     default:
       throw new Error(`Unknown strategy: ${config.strategy.name}`);
   }

@@ -146,7 +146,7 @@ If a strategy looks like it's printing money in paper mode, **the default assump
 
 ## Strategies
 
-Two are bundled. Pick one via `STRATEGY_NAME` in `.env`.
+Three are bundled. Pick one via `STRATEGY_NAME` in `.env`.
 
 ### `wide-spread-market-maker` (default)
 
@@ -167,6 +167,19 @@ Critical caveats:
 3. **PnL must be tracked separately** from any maker strategy — they have opposite risk profiles. Don't blend their numbers.
 
 Run with both, in parallel, in two separate processes pointing at the same Postgres if you want side-by-side comparison.
+
+### `rewarded-market-maker`
+
+A maker tuned to qualify for Polymarket's CLOB rewards program. Same shape as WSMM but with two key differences:
+
+1. **Quotes near mid, not at the touch.** Posts BUY at `max(bestBid+tick, mid - rewardsMaxSpread + safety)` and the symmetric SELL. The goal is to sit inside the `rewardsMaxSpread` band so the daily rewards subsidy applies.
+2. **Quote size = `max(fallbackQuoteSize, market.rewards.minSize)`.** Polymarket only counts qualifying makers above `minSize`.
+
+Edge model: `rewards $/day × your share of qualifying volume − adverse-selection cost`. The first term is structurally positive — you're paid to post quotes regardless of fill PnL. The second term is the same predator that eats every maker. Whether the net is positive depends on how crowded the rewarded markets are with other makers.
+
+Two non-obvious things to know:
+- This strategy **does nothing on markets without rewards data**. Always pair with `MARKET_DISCOVERY_REQUIRE_REWARDS=true` so discovery only surfaces qualifying markets.
+- It quotes near-mid, which is *more* adversely-selected than WSMM. Don't be surprised if fill PnL is worse than WSMM on the same markets — the rewards drip is supposed to make up the difference. Track both PnL and accumulated rewards separately to know if it's working.
 
 ## Inspecting the running bot
 

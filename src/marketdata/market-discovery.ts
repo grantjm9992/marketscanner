@@ -12,6 +12,8 @@ export interface DiscoveryFilters {
   readonly minSpread?: number;
   /** Maximum spread in dollars (filters out illiquid markets). */
   readonly maxSpread?: number;
+  /** If true, only return markets with positive CLOB maker-rewards rate. */
+  readonly requireRewards?: boolean;
   /** Cap the number of markets returned. Default 10. */
   readonly limit?: number;
   /** Number of markets fetched per Gamma request. Default 100. */
@@ -27,6 +29,17 @@ export interface DiscoveredMarket {
   readonly endDate: Date;
   readonly volume24hUsd: number;
   readonly spread: number | null;
+  /** Sum of all rewardsDailyRate across the market's reward streams. 0 if none. */
+  readonly rewardsDailyRateUsd: number;
+  /**
+   * Maximum spread (in dollars / price units) at which a maker quote
+   * still qualifies for rewards. Polymarket exposes this in cents
+   * (e.g. 3.5 = 3.5¢); we normalize to the same unit as everything
+   * else (0.035). Null when not set.
+   */
+  readonly rewardsMaxSpread: number | null;
+  /** Minimum quote size (shares) to qualify for rewards. Null when not set. */
+  readonly rewardsMinSize: number | null;
 }
 
 export type Fetcher = (url: string) => Promise<Response>;
@@ -70,6 +83,16 @@ interface GammaMarketRaw {
   best_ask?: number;
   spread?: number;
   events?: ReadonlyArray<{ slug?: string; ticker?: string; title?: string }>;
+  // Rewards fields (per CLOB rewards program). Markets without an active
+  // rewards program omit these or set rewardsDailyRate to 0.
+  clobRewards?: ReadonlyArray<{
+    rewardsDailyRate?: number;
+    rewards_daily_rate?: number;
+  }>;
+  rewardsMinSize?: number;
+  rewards_min_size?: number;
+  rewardsMaxSpread?: number;
+  rewards_max_spread?: number;
 }
 
 /**
@@ -98,6 +121,7 @@ export async function discoverMarkets(
     minDays: 0,
     minSpread: 0,
     maxSpread: 0,
+    requireRewards: 0,
   };
 
   for (let page = 0; page < maxPages; page += 1) {
@@ -178,6 +202,27 @@ function normalize(raw: GammaMarketRaw): DiscoveredMarket | null {
     raw.events?.[0]?.ticker ??
     'other';
 
+  // Sum across reward streams. Each stream may be denominated differently
+  // (e.g., one for YES token rewards, one for NO). For our purposes,
+  // total daily $ at stake is what matters.
+  let rewardsDailyRateUsd = 0;
+  for (const r of raw.clobRewards ?? []) {
+    const rate = r.rewardsDailyRate ?? r.rewards_daily_rate ?? 0;
+    if (typeof rate === 'number' && Number.isFinite(rate)) rewardsDailyRateUsd += rate;
+  }
+
+  // Polymarket exposes rewardsMaxSpread in cents (e.g. 3.5). Normalize
+  // to price units (0.035) to match everything else in the codebase.
+  const maxSpreadCents = raw.rewardsMaxSpread ?? raw.rewards_max_spread;
+  const rewardsMaxSpread =
+    typeof maxSpreadCents === 'number' && Number.isFinite(maxSpreadCents)
+      ? maxSpreadCents / 100
+      : null;
+
+  const minSizeRaw = raw.rewardsMinSize ?? raw.rewards_min_size;
+  const rewardsMinSize =
+    typeof minSizeRaw === 'number' && Number.isFinite(minSizeRaw) ? minSizeRaw : null;
+
   return {
     conditionId,
     question: raw.question ?? '',
@@ -185,6 +230,9 @@ function normalize(raw: GammaMarketRaw): DiscoveredMarket | null {
     endDate,
     volume24hUsd,
     spread,
+    rewardsDailyRateUsd,
+    rewardsMaxSpread,
+    rewardsMinSize,
   };
 }
 
@@ -197,7 +245,7 @@ function firstFailingFilter(
   m: DiscoveredMarket,
   f: DiscoveryFilters,
   now: Date,
-): 'category' | 'minVolume' | 'minDays' | 'minSpread' | 'maxSpread' | null {
+): 'category' | 'minVolume' | 'minDays' | 'minSpread' | 'maxSpread' | 'requireRewards' | null {
   if (f.categories && f.categories.length > 0) {
     const wantedLower = f.categories.map((c) => c.toLowerCase());
     if (!wantedLower.includes(m.category.toLowerCase())) return 'category';
@@ -214,6 +262,9 @@ function firstFailingFilter(
   }
   if (typeof f.maxSpread === 'number') {
     if (m.spread === null || m.spread > f.maxSpread) return 'maxSpread';
+  }
+  if (f.requireRewards === true && m.rewardsDailyRateUsd <= 0) {
+    return 'requireRewards';
   }
   return null;
 }

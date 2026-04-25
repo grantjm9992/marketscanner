@@ -75,6 +75,7 @@ const EnvSchema = z.object({
   MARKET_DISCOVERY_MIN_SPREAD: NumStr.default('0.01').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_MAX_SPREAD: NumStr.default('0.10').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_LIMIT: IntStr.default('5').pipe(z.number().int().positive()),
+  MARKET_DISCOVERY_REQUIRE_REWARDS: BoolStr.default('false'),
 
   // --- SmartMoneyFollower ---
   SMART_MONEY_DATA_API_HOST: z.string().url().default('https://data-api.polymarket.com'),
@@ -131,6 +132,7 @@ export interface Config {
     readonly minSpread: number;
     readonly maxSpread: number;
     readonly limit: number;
+    readonly requireRewards: boolean;
   };
   readonly smartMoney: {
     readonly dataApiHost: string;
@@ -212,6 +214,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       minSpread: parsed.MARKET_DISCOVERY_MIN_SPREAD,
       maxSpread: parsed.MARKET_DISCOVERY_MAX_SPREAD,
       limit: parsed.MARKET_DISCOVERY_LIMIT,
+      requireRewards: parsed.MARKET_DISCOVERY_REQUIRE_REWARDS,
     },
     smartMoney: {
       dataApiHost: parsed.SMART_MONEY_DATA_API_HOST,
