@@ -76,7 +76,7 @@ rest.
 ### Paper mode (default — start here)
 
 ```bash
-pnpm dev -- --mode paper --strategy wide-spread-market-maker
+pnpm dev --mode paper --strategy wide-spread-market-maker
 ```
 
 ### Backtest
@@ -84,7 +84,7 @@ pnpm dev -- --mode paper --strategy wide-spread-market-maker
 Replays `market_snapshot` rows from SQLite over a date range:
 
 ```bash
-pnpm dev -- --mode backtest --from 2026-01-01 --to 2026-02-01
+pnpm dev --mode backtest --from 2026-01-01 --to 2026-02-01
 ```
 
 ### Live mode
@@ -92,7 +92,7 @@ pnpm dev -- --mode backtest --from 2026-01-01 --to 2026-02-01
 Requires a funded Polygon wallet with USDC and the private key in `POLYMARKET_PRIVATE_KEY`. The bot will print a config summary and force you to type `I UNDERSTAND` before it touches real money. This friction is deliberate.
 
 ```bash
-pnpm dev -- --mode live --strategy wide-spread-market-maker
+pnpm dev --mode live --strategy wide-spread-market-maker
 ```
 
 ## Project layout

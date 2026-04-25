@@ -35,6 +35,13 @@ interface CliArgs {
 }
 
 async function main(): Promise<void> {
+  // Load .env into process.env if present. Built-in since Node 20.12 / 21.7.
+  try {
+    process.loadEnvFile('.env');
+  } catch {
+    // No .env — fine, vars may come from the shell or systemd unit.
+  }
+
   const args = parseCliArgs();
   const env = { ...process.env };
   if (args.mode) env.MODE = args.mode;
@@ -202,8 +209,12 @@ async function main(): Promise<void> {
 }
 
 function parseCliArgs(): CliArgs {
+  // pnpm v10 passes a literal `--` separator into argv when invoked as
+  // `pnpm dev -- --mode paper`. Strip it so node's parseArgs doesn't
+  // treat the rest as positionals.
+  const raw = process.argv.slice(2).filter((a) => a !== '--');
   const { values } = parseArgs({
-    args: process.argv.slice(2),
+    args: raw,
     options: {
       mode: { type: 'string' },
       strategy: { type: 'string' },
