@@ -66,6 +66,14 @@ async function main(): Promise<void> {
 
   // --- Resolve market metadata ---
   const markets = await loadMarkets(config, logger, clock);
+  if (markets.size === 0 && !isBacktest) {
+    throw new Error(
+      'No markets to trade. Either set STRATEGY_MARKETS to one or more valid condition IDs, ' +
+        'or enable MARKET_DISCOVERY_ENABLED=true and loosen the discovery filters ' +
+        '(MARKET_DISCOVERY_CATEGORIES is a comma-separated list of category names like ' +
+        '"Sports,Politics" — leave empty for any category).',
+    );
+  }
   const marketSpecs = new Map<string, MarketSpec>(
     [...markets.values()].map((m) => [
       m.conditionId,
