@@ -156,7 +156,13 @@ describe('WideSpreadMarketMaker', () => {
   });
 
   it('cancels and requotes when mid moves more than cancelMoveCents', () => {
-    const s = new WideSpreadMarketMaker({ ...DEFAULT_PARAMS, cancelMoveCents: 0.05 });
+    const s = new WideSpreadMarketMaker({
+      ...DEFAULT_PARAMS,
+      cancelMoveCents: 0.05,
+      // Disable the lifetime guard so this test exercises drift in
+      // isolation; lifetime behavior is covered separately below.
+      minQuoteLifetimeMs: 0,
+    });
     const placement = s.onBookUpdate(
       book({ bids: [[0.4, 100]], asks: [[0.6, 100]] }),
       ctx(),
@@ -264,5 +270,129 @@ describe('WideSpreadMarketMaker', () => {
     );
     // Should not have a MARKET sell (no tracked oldOrder => not stale yet).
     expect(noFlatten.find((x) => x.kind === 'PLACE_ORDER' && x.request.type === 'MARKET')).toBeUndefined();
+  });
+
+  // --- minQuoteLifetimeMs + spreadHysteresis ---
+
+  it('does not cancel a quote younger than minQuoteLifetimeMs even when spread shrinks', () => {
+    const s = new WideSpreadMarketMaker({
+      ...DEFAULT_PARAMS,
+      minSpread: 0.02,
+      spreadHysteresis: 0.005,
+      minQuoteLifetimeMs: 5000,
+    });
+    const t0 = new Date('2026-01-01T12:00:00Z');
+    const clock = new FakeClock(t0);
+    const seed = ctx({ clock });
+
+    // Wide spread → place quote.
+    const placed = s.onBookUpdate(
+      book({ bids: [[0.4, 100]], asks: [[0.6, 100]] }),
+      seed,
+    );
+    const placement = placed.find(
+      (x): x is Extract<typeof x, { kind: 'PLACE_ORDER' }> => x.kind === 'PLACE_ORDER',
+    );
+    expect(placement).toBeDefined();
+
+    const order: Order = {
+      id: orderId('o1'),
+      marketId: 'm1',
+      tokenId: 't1',
+      side: 'BUY',
+      type: 'LIMIT',
+      size: size(10),
+      limitPrice: price(0.41),
+      clientOrderId: placement!.request.clientOrderId,
+      status: 'OPEN',
+      filledSize: size(0),
+      avgFillPrice: null,
+      createdAt: t0,
+      updatedAt: t0,
+    };
+
+    // 1 second later — well within the 5s lifetime — spread collapses
+    // below the cancel threshold (0.015).
+    clock.advance(1000);
+    const sigs = s.onBookUpdate(
+      book({ bids: [[0.49, 100]], asks: [[0.5, 100]] }),
+      ctx({ ...seed, openOrders: [order], clock }),
+    );
+    expect(sigs.filter((x) => x.kind === 'CANCEL_ORDER').length).toBe(0);
+  });
+
+  it('cancels an old quote when spread shrinks below minSpread - spreadHysteresis', () => {
+    const s = new WideSpreadMarketMaker({
+      ...DEFAULT_PARAMS,
+      minSpread: 0.02,
+      spreadHysteresis: 0.005,
+      minQuoteLifetimeMs: 5000,
+    });
+    const t0 = new Date('2026-01-01T12:00:00Z');
+    const clock = new FakeClock(t0);
+
+    const placed = s.onBookUpdate(
+      book({ bids: [[0.4, 100]], asks: [[0.6, 100]] }),
+      ctx({ clock }),
+    );
+    const placement = placed.find(
+      (x): x is Extract<typeof x, { kind: 'PLACE_ORDER' }> => x.kind === 'PLACE_ORDER',
+    );
+
+    const order: Order = {
+      id: orderId('o1'),
+      marketId: 'm1',
+      tokenId: 't1',
+      side: 'BUY',
+      type: 'LIMIT',
+      size: size(10),
+      limitPrice: price(0.41),
+      clientOrderId: placement!.request.clientOrderId,
+      status: 'OPEN',
+      filledSize: size(0),
+      avgFillPrice: null,
+      createdAt: t0,
+      updatedAt: t0,
+    };
+
+    // 6 seconds later (past lifetime), spread is below cancel threshold.
+    // bid 0.50 / ask 0.51 = 0.01 spread, below the 0.015 cancel threshold.
+    clock.advance(6000);
+    const sigs = s.onBookUpdate(
+      book({ bids: [[0.5, 100]], asks: [[0.51, 100]] }),
+      ctx({ openOrders: [order], clock }),
+    );
+    expect(sigs.filter((x) => x.kind === 'CANCEL_ORDER').length).toBe(1);
+  });
+
+  it('does not place a new quote in the hysteresis band', () => {
+    const s = new WideSpreadMarketMaker({
+      ...DEFAULT_PARAMS,
+      minSpread: 0.02,
+      spreadHysteresis: 0.005,
+    });
+    // Spread = 0.02, exactly at minSpread — inside the hysteresis band
+    // (cancel threshold 0.015, quote threshold 0.025). Should hold but
+    // not place.
+    const sigs = s.onBookUpdate(
+      book({ bids: [[0.49, 100]], asks: [[0.51, 100]] }),
+      ctx(),
+    );
+    expect(sigs.filter((x) => x.kind === 'PLACE_ORDER').length).toBe(0);
+    expect(sigs.filter((x) => x.kind === 'CANCEL_ORDER').length).toBe(0);
+  });
+
+  it('places a quote when spread is above minSpread + spreadHysteresis', () => {
+    const s = new WideSpreadMarketMaker({
+      ...DEFAULT_PARAMS,
+      minSpread: 0.02,
+      spreadHysteresis: 0.005,
+    });
+    // Spread = 0.03 (bid 0.48, ask 0.51), above the 0.025 quote threshold.
+    const sigs = s.onBookUpdate(
+      book({ bids: [[0.48, 100]], asks: [[0.51, 100]] }),
+      ctx(),
+    );
+    expect(sigs.filter((x) => x.kind === 'PLACE_ORDER').length).toBeGreaterThan(0);
   });
 });
