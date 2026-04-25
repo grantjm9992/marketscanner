@@ -3,7 +3,7 @@ import pino from 'pino';
 export type Logger = pino.Logger;
 
 export interface LoggerOptions {
-  readonly level: 'trace' | 'debug' | 'info' | 'warn' | 'error';
+  readonly level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent';
   readonly pretty?: boolean;
 }
 

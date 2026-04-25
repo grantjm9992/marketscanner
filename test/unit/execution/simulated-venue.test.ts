@@ -33,7 +33,7 @@ function makeVenue(overrides: Partial<SimulatedVenueOptions> = {}): {
     latencyMs: 0,
     startingCashUsd: usd(1000),
     markets: new Map([[MARKET_ID, spec]]),
-    logger: createLogger({ level: 'error' }),
+    logger: createLogger({ level: 'silent' }),
     ...overrides,
   };
   const venue = new SimulatedVenue(opts);
