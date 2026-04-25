@@ -144,6 +144,10 @@ If a strategy looks like it's printing money in paper mode, **the default assump
 4. Scale to $100 overnight. Audit the trade log in the morning.
 5. Only then consider scaling. If live PnL diverges meaningfully from paper under the same conditions, **stop and find out why**.
 
+## Inspecting the running bot
+
+The trade log, snapshots, positions, and daily P&L are all in SQLite at `./data/bot.db`. See [`docs/sql-queries.md`](./docs/sql-queries.md) for a reference of useful queries — health checks, fills, P&L, slippage sanity checks, and live watch loops.
+
 ## Scripts
 
 | Command | What it does |
