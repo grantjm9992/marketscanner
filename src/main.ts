@@ -21,6 +21,8 @@ import { SnapshotRecorder } from './marketdata/snapshot-recorder.js';
 import { discoverMarkets } from './marketdata/market-discovery.js';
 import { DefaultRiskManager } from './risk/risk-manager.js';
 import { WideSpreadMarketMaker } from './strategy/strategies/wide-spread-market-maker.js';
+import { SmartMoneyFollower } from './strategy/strategies/smart-money-follower.js';
+import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
 import type { Strategy } from './strategy/strategy.js';
 import type { Market } from './domain/market.js';
 import { price, size, usd } from './domain/money.js';
@@ -173,7 +175,30 @@ async function main(): Promise<void> {
   }
 
   // --- Strategy ---
-  const strategy = buildStrategy(config.strategy.name, config.strategy.params);
+  const strategy = buildStrategy(config);
+
+  // --- Wallet feed (optional, only when strategy uses it AND wallets are configured) ---
+  let walletFeed: import('./marketdata/wallet-trade-feed.js').WalletTradeFeed | undefined;
+  if (
+    typeof strategy.onWalletTrade === 'function' &&
+    config.smartMoney.wallets.length > 0 &&
+    !isBacktest
+  ) {
+    walletFeed = new PolymarketWalletTradeFeed({
+      dataApiHost: config.smartMoney.dataApiHost,
+      wallets: config.smartMoney.wallets,
+      pollIntervalMs: config.smartMoney.pollMs,
+      logger,
+    });
+    logger.info(
+      { count: config.smartMoney.wallets.length, pollMs: config.smartMoney.pollMs },
+      'main: wallet trade feed configured',
+    );
+  } else if (typeof strategy.onWalletTrade === 'function') {
+    logger.warn(
+      'main: strategy supports wallet trades but SMART_MONEY_WALLETS is empty (or backtest mode); strategy will produce no signals',
+    );
+  }
 
   // --- Engine ---
   const engine = new Engine({
@@ -185,6 +210,7 @@ async function main(): Promise<void> {
     logger,
     clock,
     markets,
+    ...(walletFeed ? { walletFeed } : {}),
   });
 
   // Graceful shutdown.
@@ -364,12 +390,21 @@ function normalizeMarket(conditionId: string, raw: RawMarket): Market {
   };
 }
 
-function buildStrategy(name: string, _params: Readonly<Record<string, unknown>>): Strategy {
-  switch (name) {
+function buildStrategy(config: Config): Strategy {
+  switch (config.strategy.name) {
     case 'wide-spread-market-maker':
       return new WideSpreadMarketMaker();
+    case 'smart-money-follower':
+      return new SmartMoneyFollower({
+        copyNotionalUsd: config.smartMoney.copyUsd,
+        minSourceNotionalUsd: config.smartMoney.minSourceUsd,
+        maxAgeMs: config.smartMoney.maxAgeMs,
+        maxPriceDriftCents: config.smartMoney.maxDriftCents,
+        executionMode: config.smartMoney.executionMode,
+        perMarketCooldownMs: config.smartMoney.perMarketCooldownMs,
+      });
     default:
-      throw new Error(`Unknown strategy: ${name}`);
+      throw new Error(`Unknown strategy: ${config.strategy.name}`);
   }
 }
 

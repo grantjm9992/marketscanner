@@ -144,6 +144,30 @@ If a strategy looks like it's printing money in paper mode, **the default assump
 4. Scale to $100 overnight. Audit the trade log in the morning.
 5. Only then consider scaling. If live PnL diverges meaningfully from paper under the same conditions, **stop and find out why**.
 
+## Strategies
+
+Two are bundled. Pick one via `STRATEGY_NAME` in `.env`.
+
+### `wide-spread-market-maker` (default)
+
+A passive maker. Posts BUY at `bestBid+tick` and SELL at `bestAsk-tick`, sized at `quoteSize`. Uses hysteresis + minimum quote lifetime to avoid millisecond-scale churn. Doesn't hunt edges; provides liquidity and tries to earn the spread. Useful as a pipeline validator and as a baseline.
+
+### `smart-money-follower`
+
+An aggressive taker. Subscribes to a curated watchlist of Polygon wallet addresses via Polymarket's public Data API. When a watched wallet places a trade above `SMART_MONEY_MIN_SOURCE_USD` notional, the strategy buffers the signal, then on the next book update for that market emits a same-side LIMIT (or MARKET) for `SMART_MONEY_COPY_USD`, gated by:
+
+- **freshness** — drops signals older than `SMART_MONEY_MAX_AGE_MS`,
+- **drift** — skips if the book has moved more than `SMART_MONEY_MAX_DRIFT_CENTS` from the source price,
+- **per-(wallet × market) cooldown** so one chatty wallet doesn't dominate the order rate.
+
+Critical caveats:
+
+1. **Wallet selection is the entire edge.** Don't paste the leaderboard. Filter by *realized* PnL on closed positions, not by rank. The Hermes-style trap (`rn1`) shows that $2.68M of unrealized losses can sit behind a top-7 ranking.
+2. **This is conviction stacking, not latency arbitrage.** By the time the Data API surfaces a trade you're 5–30s behind. Don't expect to get the same fill price the smart wallet got.
+3. **PnL must be tracked separately** from any maker strategy — they have opposite risk profiles. Don't blend their numbers.
+
+Run with both, in parallel, in two separate processes pointing at the same Postgres if you want side-by-side comparison.
+
 ## Inspecting the running bot
 
 The trade log, snapshots, positions, and daily P&L go into either SQLite (default, single file at `./data/bot.db`) or Postgres (set `DATABASE_KIND=postgres` and `DATABASE_URL=...`). Same store interface either way; same queries work against both.
