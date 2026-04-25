@@ -28,6 +28,11 @@
     "ws": "^8.16.0",
     "zod": "^3.23.0"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.10",
     "@types/node": "^20.12.0",
