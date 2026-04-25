@@ -35,6 +35,13 @@ interface CliArgs {
 }
 
 async function main(): Promise<void> {
+  // Load .env into process.env if present. Built-in since Node 20.12 / 21.7.
+  try {
+    process.loadEnvFile('.env');
+  } catch {
+    // No .env — fine, vars may come from the shell or systemd unit.
+  }
+
   const args = parseCliArgs();
   const env = { ...process.env };
   if (args.mode) env.MODE = args.mode;
