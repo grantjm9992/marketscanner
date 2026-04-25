@@ -62,6 +62,16 @@ const EnvSchema = z.object({
   RECORD_SNAPSHOTS: BoolStr.default('true'),
 
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
+
+  // --- Market discovery (Gamma API) ---
+  MARKET_DISCOVERY_ENABLED: BoolStr.default('false'),
+  MARKET_DISCOVERY_GAMMA_HOST: z.string().url().default('https://gamma-api.polymarket.com'),
+  MARKET_DISCOVERY_CATEGORIES: MarketsStr.default(''), // comma-separated; '' = any
+  MARKET_DISCOVERY_MIN_VOLUME_USD: NumStr.default('50000').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_MIN_DAYS_TO_RESOLUTION: NumStr.default('7').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_MIN_SPREAD: NumStr.default('0.02').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_MAX_SPREAD: NumStr.default('0.08').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_LIMIT: IntStr.default('5').pipe(z.number().int().positive()),
 });
 
 export interface Config {
@@ -92,6 +102,16 @@ export interface Config {
   };
   readonly recordSnapshots: boolean;
   readonly logLevel: 'trace' | 'debug' | 'info' | 'warn' | 'error';
+  readonly marketDiscovery: {
+    readonly enabled: boolean;
+    readonly gammaHost: string;
+    readonly categories: readonly string[];
+    readonly minVolume24hUsd: number;
+    readonly minDaysToResolution: number;
+    readonly minSpread: number;
+    readonly maxSpread: number;
+    readonly limit: number;
+  };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -103,8 +123,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  if (parsed.STRATEGY_MARKETS.length === 0 && parsed.MODE !== 'backtest') {
-    throw new Error('STRATEGY_MARKETS must list at least one condition ID for paper or live mode.');
+  if (
+    parsed.STRATEGY_MARKETS.length === 0 &&
+    parsed.MODE !== 'backtest' &&
+    !parsed.MARKET_DISCOVERY_ENABLED
+  ) {
+    throw new Error(
+      'STRATEGY_MARKETS must list at least one condition ID, or enable MARKET_DISCOVERY_ENABLED=true.',
+    );
   }
 
   const cfg: Config = {
@@ -135,6 +161,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     recordSnapshots: parsed.RECORD_SNAPSHOTS,
     logLevel: parsed.LOG_LEVEL,
+    marketDiscovery: {
+      enabled: parsed.MARKET_DISCOVERY_ENABLED,
+      gammaHost: parsed.MARKET_DISCOVERY_GAMMA_HOST,
+      categories: parsed.MARKET_DISCOVERY_CATEGORIES,
+      minVolume24hUsd: parsed.MARKET_DISCOVERY_MIN_VOLUME_USD,
+      minDaysToResolution: parsed.MARKET_DISCOVERY_MIN_DAYS_TO_RESOLUTION,
+      minSpread: parsed.MARKET_DISCOVERY_MIN_SPREAD,
+      maxSpread: parsed.MARKET_DISCOVERY_MAX_SPREAD,
+      limit: parsed.MARKET_DISCOVERY_LIMIT,
+    },
   };
   return cfg;
 }

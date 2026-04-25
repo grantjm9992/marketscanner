@@ -36,6 +36,41 @@ cp .env.example .env
 mkdir -p data
 ```
 
+### Choosing markets
+
+Two paths — they compose, so you can use both at once.
+
+**1. Hand-curated condition IDs** via `STRATEGY_MARKETS`:
+
+```bash
+STRATEGY_MARKETS=0x1234...,0x5678...
+```
+
+Find condition IDs at the Gamma API:
+
+```bash
+curl 'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=20' \
+  | jq '.[] | {conditionId, question, volume24hr, endDate}'
+```
+
+**2. Auto-discovery** via the Gamma filters (recommended for paper/live):
+
+```bash
+MARKET_DISCOVERY_ENABLED=true
+MARKET_DISCOVERY_CATEGORIES=Sports,Politics
+MARKET_DISCOVERY_MIN_VOLUME_USD=50000
+MARKET_DISCOVERY_MIN_DAYS_TO_RESOLUTION=7
+MARKET_DISCOVERY_MIN_SPREAD=0.02
+MARKET_DISCOVERY_MAX_SPREAD=0.08
+MARKET_DISCOVERY_LIMIT=5
+```
+
+At startup the bot queries Gamma, drops closed/archived/non-accepting
+markets, applies the filters, sorts by 24h volume desc, and takes the
+top `LIMIT`. Discovered IDs are merged with `STRATEGY_MARKETS` (no
+duplicates), so you can pin a few favorites and let discovery fill the
+rest.
+
 ## Running
 
 ### Paper mode (default — start here)

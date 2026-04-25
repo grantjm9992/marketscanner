@@ -20,6 +20,7 @@ import { PolymarketVenue } from './execution/polymarket-venue.js';
 import { PolymarketFeed } from './marketdata/polymarket-feed.js';
 import { HistoricalFeed } from './marketdata/historical-feed.js';
 import { SnapshotRecorder } from './marketdata/snapshot-recorder.js';
+import { discoverMarkets } from './marketdata/market-discovery.js';
 import { DefaultRiskManager } from './risk/risk-manager.js';
 import { WideSpreadMarketMaker } from './strategy/strategies/wide-spread-market-maker.js';
 import type { Strategy } from './strategy/strategy.js';
@@ -57,7 +58,7 @@ async function main(): Promise<void> {
     : new SystemClock();
 
   // --- Resolve market metadata ---
-  const markets = await loadMarkets(config, logger);
+  const markets = await loadMarkets(config, logger, clock);
   const marketSpecs = new Map<string, MarketSpec>(
     [...markets.values()].map((m) => [
       m.conditionId,
@@ -248,12 +249,36 @@ async function confirmLiveMode(config: Config): Promise<void> {
 async function loadMarkets(
   config: Config,
   logger: import('./logging/logger.js').Logger,
+  clock: import('./engine/clock.js').Clock,
 ): Promise<ReadonlyMap<string, Market>> {
+  const ids = new Set<string>(config.strategy.markets);
+
+  if (config.marketDiscovery.enabled) {
+    const discovered = await discoverMarkets({
+      gammaHost: config.marketDiscovery.gammaHost,
+      filters: {
+        categories: config.marketDiscovery.categories,
+        minVolume24hUsd: config.marketDiscovery.minVolume24hUsd,
+        minDaysToResolution: config.marketDiscovery.minDaysToResolution,
+        minSpread: config.marketDiscovery.minSpread,
+        maxSpread: config.marketDiscovery.maxSpread,
+        limit: config.marketDiscovery.limit,
+      },
+      clock,
+      logger,
+    });
+    for (const m of discovered) ids.add(m.conditionId);
+    logger.info(
+      { discovered: discovered.length, total: ids.size },
+      'main: market discovery merged with explicit STRATEGY_MARKETS',
+    );
+  }
+
   const out = new Map<string, Market>();
-  if (config.strategy.markets.length === 0) return out;
+  if (ids.size === 0) return out;
 
   const client = new ClobClient(config.polymarket.clobHost, config.polymarket.chainId);
-  for (const conditionId of config.strategy.markets) {
+  for (const conditionId of ids) {
     try {
       // eslint-disable-next-line no-await-in-loop
       const raw = (await client.getMarket(conditionId)) as RawMarket;
