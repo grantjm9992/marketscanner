@@ -9,8 +9,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run copy-assets",
-    "copy-assets": "node -e \"import('node:fs/promises').then(async fs => { await fs.cp('src/persistence/migrations', 'dist/persistence/migrations', { recursive: true }); })\"",
-    "start": "node --enable-source-maps dist/main.js",
+    "copy-assets": "node -e \"import('node:fs/promises').then(async fs => { await fs.cp('src/persistence/migrations', 'dist/src/persistence/migrations', { recursive: true }); })\"",
+    "start": "node --enable-source-maps dist/src/main.js",
     "dev": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --ext .ts",
