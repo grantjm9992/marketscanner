@@ -15,7 +15,7 @@ import type { Clock } from '../engine/clock.js';
 import type { ExecutionVenue } from './venue.js';
 import type { FeeSchedule } from './fees.js';
 import type { Logger } from '../logging/logger.js';
-import type { TradeLogRepository } from '../persistence/repositories/trade-log.js';
+import type { TradeLogStore } from '../persistence/repositories/types.js';
 
 /**
  * Per-market metadata the venue needs to validate orders.
@@ -34,7 +34,7 @@ export interface SimulatedVenueOptions {
   readonly startingCashUsd: Usd;
   readonly markets: ReadonlyMap<string, MarketSpec>;
   readonly logger: Logger;
-  readonly tradeLog?: TradeLogRepository;
+  readonly tradeLog?: TradeLogStore;
 }
 
 /**
@@ -75,7 +75,7 @@ export class SimulatedVenue implements ExecutionVenue {
     const now = this.opts.clock.now();
     const reject = (reason: string): Order => {
       const rejected = this.makeOrder(req, '__rejected__' as unknown as OrderId, 'REJECTED', now);
-      this.opts.tradeLog?.recordReject(req, reason, now);
+      this.fireAndForget(this.opts.tradeLog?.recordReject(req, reason, now));
       this.opts.logger.warn({ req, reason }, 'simulated-venue: order rejected');
       return rejected;
     };
@@ -107,7 +107,7 @@ export class SimulatedVenue implements ExecutionVenue {
       marketOrderConsumed: false,
     };
     this.orders.set(id, state);
-    this.opts.tradeLog?.recordOrderPlaced(req, id, now);
+    this.fireAndForget(this.opts.tradeLog?.recordOrderPlaced(req, id, now));
     this.emitOrderUpdate(state.order);
 
     // Best-effort immediate match: if the order has zero latency and a book
@@ -127,7 +127,7 @@ export class SimulatedVenue implements ExecutionVenue {
 
     this.releaseReservations(state);
     state.order = { ...state.order, status: 'CANCELLED', updatedAt: this.opts.clock.now() };
-    this.opts.tradeLog?.recordCancel(state.order, this.opts.clock.now());
+    this.fireAndForget(this.opts.tradeLog?.recordCancel(state.order, this.opts.clock.now()));
     this.emitOrderUpdate(state.order);
   }
 
@@ -293,7 +293,7 @@ export class SimulatedVenue implements ExecutionVenue {
       feeUsd,
       timestamp: now,
     };
-    this.opts.tradeLog?.recordFill(fill);
+    this.fireAndForget(this.opts.tradeLog?.recordFill(fill));
     this.emitFill(fill);
     this.emitOrderUpdate(state.order);
 
@@ -460,6 +460,18 @@ export class SimulatedVenue implements ExecutionVenue {
 
   private emitOrderUpdate(order: Order): void {
     for (const h of this.orderUpdateHandlers) h(order);
+  }
+
+  /**
+   * Fire-and-forget for trade-log writes. Callers don't need to wait
+   * for an audit row to commit before continuing the fill loop. Errors
+   * are logged but don't propagate.
+   */
+  private fireAndForget(p: Promise<void> | undefined): void {
+    if (!p) return;
+    p.catch((err: unknown) => {
+      this.opts.logger.error({ err }, 'simulated-venue: trade-log write failed');
+    });
   }
 }
 

@@ -1,11 +1,11 @@
 import type { OrderBook } from '../domain/market.js';
 import type { Logger } from '../logging/logger.js';
 import type { FakeClock } from '../engine/clock.js';
-import type { MarketSnapshotRepository } from '../persistence/repositories/market-snapshot.js';
+import type { MarketSnapshotStore } from '../persistence/repositories/types.js';
 import type { MarketDataFeed } from './feed.js';
 
 export interface HistoricalFeedOptions {
-  readonly repo: MarketSnapshotRepository;
+  readonly store: MarketSnapshotStore;
   readonly clock: FakeClock;
   readonly from: Date;
   readonly to: Date;
@@ -46,7 +46,7 @@ export class HistoricalFeed implements MarketDataFeed {
   async start(): Promise<void> {
     this.running = true;
     try {
-      const snaps = this.opts.repo.range(this.opts.from, this.opts.to);
+      const snaps = await this.opts.store.range(this.opts.from, this.opts.to);
       this.opts.logger.info(
         { from: this.opts.from, to: this.opts.to, count: snaps.length },
         'historical-feed: replaying',

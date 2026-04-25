@@ -1,8 +1,9 @@
 import type { Db } from '../db.js';
 import { price, size } from '../../domain/money.js';
 import type { OrderBook, PriceLevel } from '../../domain/market.js';
+import type { MarketSnapshotStore } from './types.js';
 
-export class MarketSnapshotRepository {
+export class SqliteMarketSnapshotStore implements MarketSnapshotStore {
   private readonly insertStmt;
   private readonly rangeStmt;
 
@@ -19,7 +20,7 @@ export class MarketSnapshotRepository {
     `);
   }
 
-  record(book: OrderBook): void {
+  async record(book: OrderBook): Promise<void> {
     this.insertStmt.run(
       book.timestamp.toISOString(),
       book.marketId,
@@ -29,11 +30,7 @@ export class MarketSnapshotRepository {
     );
   }
 
-  /**
-   * Replay snapshots in chronological order over `[from, to)`.
-   * Used by HistoricalFeed.
-   */
-  range(from: Date, to: Date): readonly OrderBook[] {
+  async range(from: Date, to: Date): Promise<readonly OrderBook[]> {
     const rows = this.rangeStmt.all(from.toISOString(), to.toISOString()) as Array<{
       timestamp: string;
       market_id: string;
@@ -56,3 +53,5 @@ function parseLevels(json: string): readonly PriceLevel[] {
   const arr = JSON.parse(json) as Array<{ price: number; size: number }>;
   return arr.map((l) => ({ price: price(l.price), size: size(l.size) }));
 }
+
+export { SqliteMarketSnapshotStore as MarketSnapshotRepository };

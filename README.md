@@ -146,7 +146,9 @@ If a strategy looks like it's printing money in paper mode, **the default assump
 
 ## Inspecting the running bot
 
-The trade log, snapshots, positions, and daily P&L are all in SQLite at `./data/bot.db`. See [`docs/sql-queries.md`](./docs/sql-queries.md) for a reference of useful queries — health checks, fills, P&L, slippage sanity checks, and live watch loops.
+The trade log, snapshots, positions, and daily P&L go into either SQLite (default, single file at `./data/bot.db`) or Postgres (set `DATABASE_KIND=postgres` and `DATABASE_URL=...`). Same store interface either way; same queries work against both.
+
+See [`docs/sql-queries.md`](./docs/sql-queries.md) for a reference of useful queries — health checks, fills, P&L, slippage sanity checks, and live watch loops. See [`docs/deployment.md`](./docs/deployment.md) for Railway deployment with managed Postgres.
 
 ## Scripts
 

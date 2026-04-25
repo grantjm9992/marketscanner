@@ -25,12 +25,12 @@ describe('HistoricalFeed + SnapshotRecorder', () => {
   it('replays snapshots in chronological order and advances the clock', async () => {
     const t1 = new Date('2026-01-01T00:00:00Z');
     const t2 = new Date('2026-01-01T00:00:10Z');
-    repo.record(snap('m1', 't1', t2));
-    repo.record(snap('m1', 't1', t1));
+    await repo.record(snap('m1', 't1', t2));
+    await repo.record(snap('m1', 't1', t1));
 
     const clock = new FakeClock(new Date('2025-12-31T00:00:00Z'));
     const feed = new HistoricalFeed({
-      repo,
+      store: repo,
       clock,
       from: t1,
       to: new Date(t2.getTime() + 1),
@@ -63,8 +63,10 @@ describe('HistoricalFeed + SnapshotRecorder', () => {
     recorder.attach(fakeFeed);
     fakeFeed._h?.(snap('m1', 't1', new Date('2026-01-01T00:00:00Z')));
     fakeFeed._h?.(snap('m1', 't1', new Date('2026-01-01T00:00:01Z')));
+    // SnapshotRecorder writes are fire-and-forget; let microtasks settle.
+    await new Promise((r) => setImmediate(r));
 
-    const out = repo.range(
+    const out = await repo.range(
       new Date('2026-01-01T00:00:00Z'),
       new Date('2026-01-01T00:00:02Z'),
     );

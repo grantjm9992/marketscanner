@@ -1,0 +1,15 @@
+# Nixpacks build config for Railway.
+# Forces Node 20+ (better-sqlite3 prebuilds and process.loadEnvFile need it)
+# and pins pnpm.
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "pnpm"]
+
+[phases.install]
+cmds = ["pnpm install --frozen-lockfile"]
+
+[phases.build]
+cmds = ["pnpm build"]
+
+[start]
+cmd = "pnpm start"

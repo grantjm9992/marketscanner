@@ -6,9 +6,7 @@ import { ClobClient } from '@polymarket/clob-client';
 import { loadConfig } from './config/config.js';
 import type { Config } from './config/config.js';
 import { createLogger } from './logging/logger.js';
-import { openDatabase } from './persistence/db.js';
-import { TradeLogRepository } from './persistence/repositories/trade-log.js';
-import { MarketSnapshotRepository } from './persistence/repositories/market-snapshot.js';
+import { openStores } from './persistence/stores.js';
 import { Engine, VenuePortfolioProvider } from './engine/engine.js';
 import { FakeClock, SystemClock } from './engine/clock.js';
 import {
@@ -55,9 +53,14 @@ async function main(): Promise<void> {
     await confirmLiveMode(config);
   }
 
-  const db = openDatabase(config.database.path);
-  const tradeLog = new TradeLogRepository(db, config.mode);
-  const snapshotRepo = new MarketSnapshotRepository(db);
+  const stores = await openStores({
+    kind: config.database.kind,
+    mode: config.mode,
+    sqlitePath: config.database.path,
+    ...(config.database.url ? { pgConnectionString: config.database.url } : {}),
+    pgSsl: config.database.ssl,
+  });
+  logger.info({ kind: config.database.kind }, 'main: stores opened');
 
   const isBacktest = config.mode === 'backtest';
   const clock = isBacktest
@@ -123,7 +126,7 @@ async function main(): Promise<void> {
       startingCashUsd: usd(config.simulator.startingCashUsd),
       markets: marketSpecs,
       logger,
-      tradeLog,
+      tradeLog: stores.tradeLog,
     });
     venue = simVenue;
     portfolioProvider = new VenuePortfolioProvider(simVenue);
@@ -136,7 +139,7 @@ async function main(): Promise<void> {
       throw new Error('backtest mode requires --from and --to (ISO 8601 dates)');
     }
     feed = new HistoricalFeed({
-      repo: snapshotRepo,
+      store: stores.marketSnapshot,
       clock: clock as FakeClock,
       from: new Date(args.from),
       to: new Date(args.to),
@@ -159,7 +162,7 @@ async function main(): Promise<void> {
 
   // --- Snapshot recorder (paper / live only) ---
   if (!isBacktest && config.recordSnapshots) {
-    const recorder = new SnapshotRecorder(snapshotRepo, logger);
+    const recorder = new SnapshotRecorder(stores.marketSnapshot, logger);
     recorder.attach(feed);
   }
 
@@ -200,7 +203,7 @@ async function main(): Promise<void> {
       }
     }
     try {
-      db.close();
+      await stores.close();
     } catch {
       // ignore
     }
@@ -257,6 +260,24 @@ async function confirmLiveMode(config: Config): Promise<void> {
     // eslint-disable-next-line no-console
     console.warn(l);
   }
+
+  // Headless escape hatch: on Railway / systemd / containers there is
+  // no interactive stdin. Allow setting LIVE_CONFIRM='I UNDERSTAND' to
+  // satisfy the same "you read the warning" gate without a TTY. Print
+  // both the warning and the env var name so it's still impossible to
+  // flip on by accident.
+  if (process.env.LIVE_CONFIRM === 'I UNDERSTAND') {
+    // eslint-disable-next-line no-console
+    console.warn('  confirmed via LIVE_CONFIRM env var');
+    return;
+  }
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      'live-mode requires confirmation but stdin is not a TTY. Set LIVE_CONFIRM="I UNDERSTAND" in the environment to proceed headlessly.',
+    );
+  }
+
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await rl.question('Type "I UNDERSTAND" exactly to proceed: ');
   rl.close();
