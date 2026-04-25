@@ -62,16 +62,16 @@ describe('Engine integration: HistoricalFeed + SimulatedVenue + WSMM + RiskManag
     // Canned sequence: wide spread -> wide spread (BUY quote stays open)
     // -> book moves so ask crosses our buy limit -> our BUY fills.
     const t0 = new Date('2026-01-01T12:00:00Z');
-    snapRepo.record(snap(new Date(t0.getTime() + 0), 0.4, 0.6));
-    snapRepo.record(snap(new Date(t0.getTime() + 1000), 0.4, 0.6));
+    await snapRepo.record(snap(new Date(t0.getTime() + 0), 0.4, 0.6));
+    await snapRepo.record(snap(new Date(t0.getTime() + 1000), 0.4, 0.6));
     // Book crosses: ask now 0.40 — our BUY at 0.41 should fill at 0.40.
-    snapRepo.record(snap(new Date(t0.getTime() + 2000), 0.39, 0.4));
+    await snapRepo.record(snap(new Date(t0.getTime() + 2000), 0.39, 0.4));
 
     const clock = new FakeClock(new Date(t0.getTime() - 1000));
     const logger = createLogger({ level: 'silent' });
 
     const feed = new HistoricalFeed({
-      repo: snapRepo,
+      store: snapRepo,
       clock,
       from: t0,
       to: new Date(t0.getTime() + 60_000),
@@ -118,9 +118,11 @@ describe('Engine integration: HistoricalFeed + SimulatedVenue + WSMM + RiskManag
     feed.onBookUpdate((b) => venue.onBookUpdate(b));
 
     await engine.start();
+    // Trade-log writes are fire-and-forget from the venue; let them settle.
+    await new Promise((r) => setImmediate(r));
 
     // Confirm the trade log captured at least one ORDER_PLACED and one FILL.
-    const events = tradeLog.recentForMarket('m1');
+    const events = await tradeLog.recentForMarket('m1');
     const eventTypes = events.map((e) => e.eventType);
     expect(eventTypes).toContain('ORDER_PLACED');
     expect(eventTypes).toContain('FILL');
@@ -136,14 +138,14 @@ describe('Engine integration: HistoricalFeed + SimulatedVenue + WSMM + RiskManag
 
   it('halts on kill switch and stops dispatching new orders', async () => {
     const t0 = new Date('2026-01-01T12:00:00Z');
-    snapRepo.record(snap(new Date(t0.getTime() + 0), 0.4, 0.6));
-    snapRepo.record(snap(new Date(t0.getTime() + 1000), 0.4, 0.6));
+    await snapRepo.record(snap(new Date(t0.getTime() + 0), 0.4, 0.6));
+    await snapRepo.record(snap(new Date(t0.getTime() + 1000), 0.4, 0.6));
 
     const clock = new FakeClock(new Date(t0.getTime() - 1000));
     const logger = createLogger({ level: 'silent' });
 
     const feed = new HistoricalFeed({
-      repo: snapRepo,
+      store: snapRepo,
       clock,
       from: t0,
       to: new Date(t0.getTime() + 60_000),
@@ -186,7 +188,8 @@ describe('Engine integration: HistoricalFeed + SimulatedVenue + WSMM + RiskManag
     feed.onBookUpdate((b) => venue.onBookUpdate(b));
 
     await engine.start();
-    const events = tradeLog.recentForMarket('m1');
+    await new Promise((r) => setImmediate(r));
+    const events = await tradeLog.recentForMarket('m1');
     expect(events.find((e) => e.eventType === 'ORDER_PLACED')).toBeUndefined();
     await engine.stop();
   });

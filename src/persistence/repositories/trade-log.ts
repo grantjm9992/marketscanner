@@ -1,26 +1,15 @@
 import type { Db } from '../db.js';
 import type { Order, Fill, OrderRequest, OrderId } from '../../domain/order.js';
+import type { TradeLogMode, TradeLogStore, TradeLogEvent, TradeLogRow } from './types.js';
 
-export type TradeLogMode = 'live' | 'paper' | 'backtest';
-export type TradeLogEvent = 'ORDER_PLACED' | 'FILL' | 'CANCEL' | 'REJECT';
+export type { TradeLogMode, TradeLogEvent, TradeLogRow };
 
-export interface TradeLogRow {
-  readonly id: number;
-  readonly timestamp: string;
-  readonly mode: TradeLogMode;
-  readonly eventType: TradeLogEvent;
-  readonly orderId: string | null;
-  readonly marketId: string;
-  readonly tokenId: string | null;
-  readonly side: string | null;
-  readonly orderType: string | null;
-  readonly size: number | null;
-  readonly price: number | null;
-  readonly feeUsd: number | null;
-  readonly payloadJson: string;
-}
-
-export class TradeLogRepository {
+/**
+ * SQLite-backed TradeLogStore. Underlying calls are synchronous; the
+ * async signatures match the interface so a Postgres backend can slot in
+ * without changing callers.
+ */
+export class SqliteTradeLogStore implements TradeLogStore {
   private readonly insertStmt;
 
   constructor(
@@ -35,7 +24,7 @@ export class TradeLogRepository {
     `);
   }
 
-  recordOrderPlaced(req: OrderRequest, id: OrderId, at: Date): void {
+  async recordOrderPlaced(req: OrderRequest, id: OrderId, at: Date): Promise<void> {
     this.insertStmt.run(
       at.toISOString(),
       this.mode,
@@ -52,7 +41,7 @@ export class TradeLogRepository {
     );
   }
 
-  recordFill(fill: Fill): void {
+  async recordFill(fill: Fill): Promise<void> {
     this.insertStmt.run(
       fill.timestamp.toISOString(),
       this.mode,
@@ -69,7 +58,7 @@ export class TradeLogRepository {
     );
   }
 
-  recordCancel(order: Order, at: Date): void {
+  async recordCancel(order: Order, at: Date): Promise<void> {
     this.insertStmt.run(
       at.toISOString(),
       this.mode,
@@ -86,7 +75,7 @@ export class TradeLogRepository {
     );
   }
 
-  recordReject(req: OrderRequest, reason: string, at: Date): void {
+  async recordReject(req: OrderRequest, reason: string, at: Date): Promise<void> {
     this.insertStmt.run(
       at.toISOString(),
       this.mode,
@@ -103,7 +92,7 @@ export class TradeLogRepository {
     );
   }
 
-  recentForMarket(marketId: string, limit = 100): readonly TradeLogRow[] {
+  async recentForMarket(marketId: string, limit = 100): Promise<readonly TradeLogRow[]> {
     const rows = this.db
       .prepare(
         `SELECT * FROM trade_log WHERE market_id = ? ORDER BY timestamp DESC LIMIT ?`,
@@ -141,3 +130,6 @@ export class TradeLogRepository {
     }));
   }
 }
+
+// Backwards-compat alias so existing imports don't break mid-refactor.
+export { SqliteTradeLogStore as TradeLogRepository };

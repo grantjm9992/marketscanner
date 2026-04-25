@@ -1,13 +1,9 @@
 import type { Db } from '../db.js';
 import { usd } from '../../domain/money.js';
 import type { Usd } from '../../domain/money.js';
+import type { DailyPnlStore, DailyPnlSummary } from './types.js';
 
-/**
- * Aggregate realized PnL, fees, and trade count for a calendar day.
- * Used by the risk manager to enforce the daily-loss kill switch and by
- * post-hoc auditing.
- */
-export class DailyPnlRepository {
+export class SqliteDailyPnlStore implements DailyPnlStore {
   private readonly upsertStmt;
   private readonly getStmt;
 
@@ -23,11 +19,11 @@ export class DailyPnlRepository {
     this.getStmt = db.prepare(`SELECT * FROM daily_pnl WHERE date = ?`);
   }
 
-  recordTrade(date: Date, realizedPnl: Usd, fees: Usd): void {
+  async recordTrade(date: Date, realizedPnl: Usd, fees: Usd): Promise<void> {
     this.upsertStmt.run(toDateKey(date), realizedPnl, fees);
   }
 
-  get(date: Date): { realizedPnlUsd: Usd; feesPaidUsd: Usd; tradeCount: number } | null {
+  async get(date: Date): Promise<DailyPnlSummary | null> {
     const row = this.getStmt.get(toDateKey(date)) as
       | { realized_pnl_usd: number; fees_paid_usd: number; trade_count: number }
       | undefined;
@@ -43,3 +39,5 @@ export class DailyPnlRepository {
 export function toDateKey(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
+
+export { SqliteDailyPnlStore as DailyPnlRepository };

@@ -43,7 +43,10 @@ const EnvSchema = z.object({
   POLYMARKET_CHAIN_ID: IntStr.default('137'),
   POLYMARKET_PRIVATE_KEY: z.string().optional(),
 
+  DATABASE_KIND: z.enum(['sqlite', 'postgres']).default('sqlite'),
   DATABASE_PATH: z.string().default('./data/bot.db'),
+  DATABASE_URL: z.string().optional(),
+  DATABASE_SSL: BoolStr.default('true'),
 
   RISK_MAX_POSITION_USD: NumStr.pipe(z.number().positive()),
   RISK_MAX_TOTAL_DEPLOYED_USD: NumStr.pipe(z.number().positive()),
@@ -82,7 +85,12 @@ export interface Config {
     readonly chainId: number;
     readonly privateKey?: string;
   };
-  readonly database: { readonly path: string };
+  readonly database: {
+    readonly kind: 'sqlite' | 'postgres';
+    readonly path: string;
+    readonly url?: string;
+    readonly ssl: boolean;
+  };
   readonly risk: {
     readonly maxPositionSizeUsd: number;
     readonly maxTotalDeployedUsd: number;
@@ -117,6 +125,12 @@ export interface Config {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = EnvSchema.parse(env);
 
+  if (parsed.DATABASE_KIND === 'postgres' && !parsed.DATABASE_URL) {
+    throw new Error(
+      'DATABASE_URL is required when DATABASE_KIND=postgres (e.g. postgres://user:pass@host:5432/db).',
+    );
+  }
+
   if (parsed.MODE === 'live' && !parsed.POLYMARKET_PRIVATE_KEY) {
     throw new Error(
       'POLYMARKET_PRIVATE_KEY is required when MODE=live. Refusing to start in live mode without a signing key.',
@@ -141,7 +155,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       chainId: parsed.POLYMARKET_CHAIN_ID,
       ...(parsed.POLYMARKET_PRIVATE_KEY ? { privateKey: parsed.POLYMARKET_PRIVATE_KEY } : {}),
     },
-    database: { path: parsed.DATABASE_PATH },
+    database: {
+      kind: parsed.DATABASE_KIND,
+      path: parsed.DATABASE_PATH,
+      ...(parsed.DATABASE_URL ? { url: parsed.DATABASE_URL } : {}),
+      ssl: parsed.DATABASE_SSL,
+    },
     risk: {
       maxPositionSizeUsd: parsed.RISK_MAX_POSITION_USD,
       maxTotalDeployedUsd: parsed.RISK_MAX_TOTAL_DEPLOYED_USD,

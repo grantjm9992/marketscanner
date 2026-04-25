@@ -46,10 +46,10 @@ describe('persistence', () => {
   });
 
   describe('TradeLogRepository', () => {
-    it('records orders, fills, cancels, rejects', () => {
+    it('records orders, fills, cancels, rejects', async () => {
       const repo = new TradeLogRepository(db, 'paper');
       const now = new Date('2026-04-01T00:00:00Z');
-      repo.recordOrderPlaced(
+      await repo.recordOrderPlaced(
         {
           marketId: 'm1',
           tokenId: 't1',
@@ -62,7 +62,7 @@ describe('persistence', () => {
         orderId('o1'),
         now,
       );
-      repo.recordFill({
+      await repo.recordFill({
         orderId: orderId('o1'),
         marketId: 'm1',
         tokenId: 't1',
@@ -72,7 +72,7 @@ describe('persistence', () => {
         feeUsd: usd(0),
         timestamp: now,
       });
-      const recent = repo.recentForMarket('m1');
+      const recent = await repo.recentForMarket('m1');
       expect(recent.length).toBe(2);
       const eventTypes = recent.map((r) => r.eventType).sort();
       expect(eventTypes).toEqual(['FILL', 'ORDER_PLACED']);
@@ -80,25 +80,25 @@ describe('persistence', () => {
   });
 
   describe('MarketSnapshotRepository', () => {
-    it('records and replays snapshots in order', () => {
+    it('records and replays snapshots in order', async () => {
       const repo = new MarketSnapshotRepository(db);
       const t1 = new Date('2026-04-01T00:00:00Z');
       const t2 = new Date('2026-04-01T00:00:01Z');
-      repo.record({
+      await repo.record({
         marketId: 'm1',
         tokenId: 't1',
         bids: [{ price: price(0.49), size: size(100) }],
         asks: [{ price: price(0.51), size: size(100) }],
         timestamp: t2,
       });
-      repo.record({
+      await repo.record({
         marketId: 'm1',
         tokenId: 't1',
         bids: [{ price: price(0.48), size: size(100) }],
         asks: [{ price: price(0.52), size: size(100) }],
         timestamp: t1,
       });
-      const replay = repo.range(t1, new Date(t2.getTime() + 1));
+      const replay = await repo.range(t1, new Date(t2.getTime() + 1));
       expect(replay.length).toBe(2);
       expect(replay[0]?.timestamp.getTime()).toBe(t1.getTime());
       expect(replay[1]?.timestamp.getTime()).toBe(t2.getTime());
@@ -106,10 +106,10 @@ describe('persistence', () => {
   });
 
   describe('PositionRepository', () => {
-    it('upserts and retrieves positions', () => {
+    it('upserts and retrieves positions', async () => {
       const repo = new PositionRepository(db);
       const now = new Date();
-      repo.upsert(
+      await repo.upsert(
         {
           marketId: 'm1',
           tokenId: 't1',
@@ -119,11 +119,11 @@ describe('persistence', () => {
         },
         now,
       );
-      const got = repo.get('m1', 't1');
+      const got = await repo.get('m1', 't1');
       expect(got?.size).toBe(100);
       expect(got?.avgEntryPrice).toBe(0.4);
 
-      repo.upsert(
+      await repo.upsert(
         {
           marketId: 'm1',
           tokenId: 't1',
@@ -133,20 +133,20 @@ describe('persistence', () => {
         },
         now,
       );
-      const updated = repo.get('m1', 't1');
+      const updated = await repo.get('m1', 't1');
       expect(updated?.size).toBe(50);
       expect(updated?.realizedPnlUsd).toBe(2.5);
-      expect(repo.all().length).toBe(1);
+      expect((await repo.all()).length).toBe(1);
     });
   });
 
   describe('DailyPnlRepository', () => {
-    it('aggregates realized pnl and fees per day', () => {
+    it('aggregates realized pnl and fees per day', async () => {
       const repo = new DailyPnlRepository(db);
       const day = new Date('2026-04-01T12:34:56Z');
-      repo.recordTrade(day, usd(10), usd(0.05));
-      repo.recordTrade(day, usd(-3), usd(0.05));
-      const got = repo.get(day);
+      await repo.recordTrade(day, usd(10), usd(0.05));
+      await repo.recordTrade(day, usd(-3), usd(0.05));
+      const got = await repo.get(day);
       expect(got?.realizedPnlUsd).toBeCloseTo(7);
       expect(got?.feesPaidUsd).toBeCloseTo(0.1);
       expect(got?.tradeCount).toBe(2);

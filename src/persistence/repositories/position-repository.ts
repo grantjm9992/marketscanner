@@ -1,8 +1,9 @@
 import type { Db } from '../db.js';
 import { price, size, usd } from '../../domain/money.js';
 import type { Position } from '../../domain/portfolio.js';
+import type { PositionStore } from './types.js';
 
-export class PositionRepository {
+export class SqlitePositionStore implements PositionStore {
   private readonly upsertStmt;
   private readonly getAllStmt;
   private readonly getOneStmt;
@@ -27,7 +28,7 @@ export class PositionRepository {
     );
   }
 
-  upsert(p: Position, at: Date): void {
+  async upsert(p: Position, at: Date): Promise<void> {
     this.upsertStmt.run(
       p.marketId,
       p.tokenId,
@@ -38,7 +39,7 @@ export class PositionRepository {
     );
   }
 
-  get(marketId: string, tokenId: string): Position | null {
+  async get(marketId: string, tokenId: string): Promise<Position | null> {
     const row = this.getOneStmt.get(marketId, tokenId) as
       | {
           market_id: string;
@@ -52,7 +53,7 @@ export class PositionRepository {
     return rowToPosition(row);
   }
 
-  all(): readonly Position[] {
+  async all(): Promise<readonly Position[]> {
     const rows = this.getAllStmt.all() as Array<{
       market_id: string;
       token_id: string;
@@ -63,7 +64,7 @@ export class PositionRepository {
     return rows.map(rowToPosition);
   }
 
-  remove(marketId: string, tokenId: string): void {
+  async remove(marketId: string, tokenId: string): Promise<void> {
     this.deleteStmt.run(marketId, tokenId);
   }
 }
@@ -83,3 +84,5 @@ function rowToPosition(row: {
     realizedPnlUsd: usd(row.realized_pnl_usd),
   };
 }
+
+export { SqlitePositionStore as PositionRepository };
