@@ -13,6 +13,19 @@ export interface WideSpreadParams {
   readonly cancelMoveCents: number; // cancel if mid moves >= N cents from quote
   readonly minDailyVolumeUsd: number; // strategy currently doesn't fetch volume
   readonly minTimeToEndMs: number; // skip if market closes too soon
+  /**
+   * Minimum age (ms) before a quote can be cancelled by the spread or
+   * drift checks. Prevents place-then-cancel-within-milliseconds churn
+   * when the spread oscillates around `minSpread`.
+   */
+  readonly minQuoteLifetimeMs: number;
+  /**
+   * Hysteresis around `minSpread`. We only place new quotes when spread
+   * >= minSpread + spreadHysteresis, and only cancel due to a tight book
+   * when spread < minSpread - spreadHysteresis. Stops the strategy from
+   * flapping at the threshold.
+   */
+  readonly spreadHysteresis: number;
 }
 
 export const DEFAULT_PARAMS: WideSpreadParams = {
@@ -24,6 +37,11 @@ export const DEFAULT_PARAMS: WideSpreadParams = {
   cancelMoveCents: 0.05,
   minDailyVolumeUsd: 5_000,
   minTimeToEndMs: 24 * 60 * 60 * 1000,
+  // 5s is long enough to ride out millisecond book noise but short enough
+  // not to leave a stale quote sitting through a real move.
+  minQuoteLifetimeMs: 5_000,
+  // 0.5¢ band: place at ≥ 2.5¢ spread, cancel only when < 1.5¢.
+  spreadHysteresis: 0.005,
 };
 
 interface QuoteState {
@@ -91,9 +109,14 @@ export class WideSpreadMarketMaker implements Strategy {
       return signals;
     }
 
-    if ((sp as number) < this.params.minSpread) {
-      // Spread too tight — pull and wait.
-      signals.push(...this.cancelAllQuotesForMarket(ctx, book.marketId));
+    const sp_num = sp as number;
+    const cancelThreshold = Math.max(0, this.params.minSpread - this.params.spreadHysteresis);
+    const quoteThreshold = this.params.minSpread + this.params.spreadHysteresis;
+
+    if (sp_num < cancelThreshold) {
+      // Spread definitively too tight. Cancel any quote old enough to
+      // be cancelled; leave young ones alone (they'll get another shot).
+      signals.push(...this.cancelEligibleQuotesForMarket(ctx, book.marketId, now));
       return signals;
     }
 
@@ -102,16 +125,23 @@ export class WideSpreadMarketMaker implements Strategy {
     const desiredSell = round((ask.price as number) - tick, tick);
     const mid = ((bid.price as number) + (ask.price as number)) / 2;
 
-    // Cancel quotes that have drifted too far from mid.
+    // Cancel quotes that have drifted too far from mid (and are old
+    // enough to cancel).
     for (const order of ctx.openOrders) {
       if (order.marketId !== book.marketId) continue;
       const q = this.quotesByClientId.get(order.clientOrderId);
       if (!q) continue;
+      if (this.tooYoungToCancel(q, now)) continue;
       const drift = Math.abs(mid - q.midAtPlacement);
       if (drift >= this.params.cancelMoveCents) {
         signals.push({ kind: 'CANCEL_ORDER', orderId: order.id });
         this.quotesByClientId.delete(order.clientOrderId);
       }
+    }
+
+    // In the hysteresis band: hold whatever we have, don't place new.
+    if (sp_num < quoteThreshold) {
+      return signals;
     }
 
     // Place fresh quotes if we don't already have one on each side.
@@ -210,6 +240,28 @@ export class WideSpreadMarketMaker implements Strategy {
       this.quotesByClientId.delete(order.clientOrderId);
     }
     return out;
+  }
+
+  /** Like cancelAllQuotesForMarket, but skips quotes younger than minQuoteLifetimeMs. */
+  private cancelEligibleQuotesForMarket(
+    ctx: StrategyContext,
+    marketId: string,
+    now: Date,
+  ): readonly Signal[] {
+    const out: Signal[] = [];
+    for (const order of ctx.openOrders) {
+      if (order.marketId !== marketId) continue;
+      const q = this.quotesByClientId.get(order.clientOrderId);
+      if (!q) continue;
+      if (this.tooYoungToCancel(q, now)) continue;
+      out.push({ kind: 'CANCEL_ORDER', orderId: order.id });
+      this.quotesByClientId.delete(order.clientOrderId);
+    }
+    return out;
+  }
+
+  private tooYoungToCancel(q: QuoteState, now: Date): boolean {
+    return now.getTime() - q.placedAt.getTime() < this.params.minQuoteLifetimeMs;
   }
 
   private isOurOrder(o: Order): boolean {
