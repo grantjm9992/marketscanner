@@ -14,6 +14,9 @@ importers:
       better-sqlite3:
         specifier: ^11.0.0
         version: 11.10.0
+      ethers:
+        specifier: ^5.7.2
+        version: 5.8.0
       pino:
         specifier: ^9.0.0
         version: 9.14.0
