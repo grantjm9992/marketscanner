@@ -66,6 +66,14 @@ async function main(): Promise<void> {
 
   // --- Resolve market metadata ---
   const markets = await loadMarkets(config, logger, clock);
+  if (markets.size === 0 && !isBacktest) {
+    throw new Error(
+      'No markets to trade. Either set STRATEGY_MARKETS to one or more valid condition IDs, ' +
+        'or enable MARKET_DISCOVERY_ENABLED=true and loosen the discovery filters ' +
+        '(MARKET_DISCOVERY_CATEGORIES is a comma-separated list of category names like ' +
+        '"Sports,Politics" — leave empty for any category).',
+    );
+  }
   const marketSpecs = new Map<string, MarketSpec>(
     [...markets.values()].map((m) => [
       m.conditionId,
@@ -292,8 +300,20 @@ async function loadMarkets(
   for (const conditionId of ids) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      const raw = (await client.getMarket(conditionId)) as RawMarket;
-      out.set(conditionId, normalizeMarket(conditionId, raw));
+      const raw = (await client.getMarket(conditionId)) as RawMarket | { error?: string };
+      // The clob-client doesn't always throw on 4xx — it can return
+      // {error: "..."}. Fail loudly so the bot doesn't silently run with
+      // a half-broken market that has no outcomes to subscribe to.
+      if ('error' in raw && raw.error) {
+        throw new Error(`CLOB rejected market ${conditionId}: ${String(raw.error)}`);
+      }
+      const tokens = (raw as RawMarket).tokens ?? [];
+      if (tokens.length === 0) {
+        throw new Error(
+          `Market ${conditionId} returned no outcomes. Likely an invalid condition ID — verify with the Gamma API or enable MARKET_DISCOVERY_ENABLED=true.`,
+        );
+      }
+      out.set(conditionId, normalizeMarket(conditionId, raw as RawMarket));
     } catch (err) {
       logger.error({ err, conditionId }, 'main: failed to fetch market metadata');
       throw err;

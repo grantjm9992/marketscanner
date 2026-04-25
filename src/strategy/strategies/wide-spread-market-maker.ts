@@ -16,11 +16,13 @@ export interface WideSpreadParams {
 }
 
 export const DEFAULT_PARAMS: WideSpreadParams = {
-  minSpread: 0.03,
+  // Real Polymarket spreads are usually 1-2¢. 0.02 keeps the strategy
+  // active without chasing 1¢ books that move under it.
+  minSpread: 0.02,
   quoteSize: 10,
   maxHoldMinutes: 30,
   cancelMoveCents: 0.05,
-  minDailyVolumeUsd: 10_000,
+  minDailyVolumeUsd: 5_000,
   minTimeToEndMs: 24 * 60 * 60 * 1000,
 };
 

@@ -67,10 +67,10 @@ const EnvSchema = z.object({
   MARKET_DISCOVERY_ENABLED: BoolStr.default('false'),
   MARKET_DISCOVERY_GAMMA_HOST: z.string().url().default('https://gamma-api.polymarket.com'),
   MARKET_DISCOVERY_CATEGORIES: MarketsStr.default(''), // comma-separated; '' = any
-  MARKET_DISCOVERY_MIN_VOLUME_USD: NumStr.default('50000').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_MIN_VOLUME_USD: NumStr.default('5000').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_MIN_DAYS_TO_RESOLUTION: NumStr.default('7').pipe(z.number().nonnegative()),
-  MARKET_DISCOVERY_MIN_SPREAD: NumStr.default('0.02').pipe(z.number().nonnegative()),
-  MARKET_DISCOVERY_MAX_SPREAD: NumStr.default('0.08').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_MIN_SPREAD: NumStr.default('0.01').pipe(z.number().nonnegative()),
+  MARKET_DISCOVERY_MAX_SPREAD: NumStr.default('0.10').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_LIMIT: IntStr.default('5').pipe(z.number().int().positive()),
 });
 

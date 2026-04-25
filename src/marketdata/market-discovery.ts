@@ -44,6 +44,10 @@ export interface MarketDiscoveryOptions {
 /**
  * Raw shape returned by Gamma's /markets endpoint. Defensive — the API
  * mixes camelCase and snake_case across versions.
+ *
+ * Note: there is no top-level `category` field. Markets sit under an
+ * `events[]` entry that has `ticker` / `title` / `slug`; we use the
+ * event slug as a poor-man's category label.
  */
 interface GammaMarketRaw {
   conditionId?: string;
@@ -65,6 +69,7 @@ interface GammaMarketRaw {
   best_bid?: number;
   best_ask?: number;
   spread?: number;
+  events?: ReadonlyArray<{ slug?: string; ticker?: string; title?: string }>;
 }
 
 /**
@@ -85,6 +90,16 @@ export async function discoverMarkets(
   const now = opts.clock.now();
 
   const out: DiscoveredMarket[] = [];
+  let totalFetched = 0;
+  let droppedNormalize = 0;
+  const droppedBy: Record<string, number> = {
+    category: 0,
+    minVolume: 0,
+    minDays: 0,
+    minSpread: 0,
+    maxSpread: 0,
+  };
+
   for (let page = 0; page < maxPages; page += 1) {
     const offset = page * pageSize;
     const url = `${opts.gammaHost.replace(/\/$/, '')}/markets?active=true&closed=false&limit=${pageSize}&offset=${offset}`;
@@ -95,15 +110,22 @@ export async function discoverMarkets(
     const body = (await res.json()) as unknown;
     const arr = Array.isArray(body) ? (body as GammaMarketRaw[]) : [];
     if (arr.length === 0) break;
+    totalFetched += arr.length;
 
     for (const raw of arr) {
       const m = normalize(raw);
-      if (!m) continue;
-      if (!matches(m, opts.filters, now)) continue;
+      if (!m) {
+        droppedNormalize += 1;
+        continue;
+      }
+      const reason = firstFailingFilter(m, opts.filters, now);
+      if (reason) {
+        droppedBy[reason] = (droppedBy[reason] ?? 0) + 1;
+        continue;
+      }
       out.push(m);
     }
 
-    // Stop when the page came back short — no more data.
     if (arr.length < pageSize) break;
   }
 
@@ -112,7 +134,10 @@ export async function discoverMarkets(
 
   opts.logger.info(
     {
-      candidatesScanned: out.length,
+      totalFetched,
+      droppedNormalize,
+      droppedBy,
+      passedFilters: out.length,
       selected: truncated.length,
       filters: opts.filters,
     },
@@ -144,35 +169,53 @@ function normalize(raw: GammaMarketRaw): DiscoveredMarket | null {
         ? bestAsk - bestBid
         : null;
 
+  // /markets has no `category` field. Use the parent event's slug or
+  // ticker as a coarse label so users can still filter (e.g. include
+  // "what-will-happen-before-gta-vi", exclude "us-recession-2026").
+  const category =
+    raw.category ??
+    raw.events?.[0]?.slug ??
+    raw.events?.[0]?.ticker ??
+    'other';
+
   return {
     conditionId,
     question: raw.question ?? '',
-    category: raw.category ?? 'other',
+    category,
     endDate,
     volume24hUsd,
     spread,
   };
 }
 
-function matches(m: DiscoveredMarket, f: DiscoveryFilters, now: Date): boolean {
+/**
+ * Returns the name of the first filter the market fails, or null if it
+ * passes everything. Used both for filtering and for reject-reason
+ * counters in the discovery summary log.
+ */
+function firstFailingFilter(
+  m: DiscoveredMarket,
+  f: DiscoveryFilters,
+  now: Date,
+): 'category' | 'minVolume' | 'minDays' | 'minSpread' | 'maxSpread' | null {
   if (f.categories && f.categories.length > 0) {
     const wantedLower = f.categories.map((c) => c.toLowerCase());
-    if (!wantedLower.includes(m.category.toLowerCase())) return false;
+    if (!wantedLower.includes(m.category.toLowerCase())) return 'category';
   }
   if (typeof f.minVolume24hUsd === 'number' && m.volume24hUsd < f.minVolume24hUsd) {
-    return false;
+    return 'minVolume';
   }
   if (typeof f.minDaysToResolution === 'number') {
     const daysOut = (m.endDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000);
-    if (daysOut < f.minDaysToResolution) return false;
+    if (daysOut < f.minDaysToResolution) return 'minDays';
   }
   if (typeof f.minSpread === 'number') {
-    if (m.spread === null || m.spread < f.minSpread) return false;
+    if (m.spread === null || m.spread < f.minSpread) return 'minSpread';
   }
   if (typeof f.maxSpread === 'number') {
-    if (m.spread === null || m.spread > f.maxSpread) return false;
+    if (m.spread === null || m.spread > f.maxSpread) return 'maxSpread';
   }
-  return true;
+  return null;
 }
 
 async function safeText(res: Response): Promise<string> {
