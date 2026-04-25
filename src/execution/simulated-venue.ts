@@ -60,6 +60,10 @@ export class SimulatedVenue implements ExecutionVenue {
   private readonly fillHandlers: Array<(f: Fill) => void> = [];
   private readonly orderUpdateHandlers: Array<(o: Order) => void> = [];
   private nextId = 1;
+  // Unique per-process token so order IDs don't collide with prior runs
+  // sharing the same SQLite trade log. Without this, a query that joins
+  // ORDER_PLACED to CANCEL on order_id can match across runs.
+  private readonly idPrefix = `sim-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}-`;
 
   constructor(private readonly opts: SimulatedVenueOptions) {
     this.cash = opts.startingCashUsd;
@@ -79,7 +83,7 @@ export class SimulatedVenue implements ExecutionVenue {
     const validation = this.validate(req);
     if (validation !== null) return reject(validation);
 
-    const id = orderId(`sim-${this.nextId++}`);
+    const id = orderId(`${this.idPrefix}${this.nextId++}`);
     const eligibleAt = new Date(now.getTime() + this.opts.latencyMs);
 
     const reservedCash = this.reservationCashFor(req);

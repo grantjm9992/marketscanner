@@ -86,6 +86,8 @@ ORDER BY placed DESC;
 
 **Quote lifetime** — how long quotes live before being cancelled. With `minQuoteLifetimeMs: 5000` the average should be > 5000ms; if it's in the tens of milliseconds, the strategy is thrashing.
 
+The cancel subquery filters to cancels with a timestamp at or after the place — order IDs from the simulated venue now include a per-run token, but the timestamp guard makes the query correct even on a trade log that mixes runs with the older non-prefixed IDs.
+
 ```sql
 SELECT market_id,
        SUM(event_type = 'ORDER_PLACED') AS placed,
@@ -93,7 +95,8 @@ SELECT market_id,
        SUM(event_type = 'FILL') AS filled,
        ROUND(AVG((julianday((SELECT MIN(timestamp) FROM trade_log t2
                             WHERE t2.event_type = 'CANCEL'
-                              AND t2.order_id = t1.order_id))
+                              AND t2.order_id = t1.order_id
+                              AND t2.timestamp >= t1.timestamp))
                  - julianday(t1.timestamp)) * 86400000), 0) AS avg_lifetime_ms
 FROM trade_log t1
 WHERE event_type = 'ORDER_PLACED'
