@@ -83,6 +83,13 @@ const EnvSchema = z.object({
    * for the weather-forecast strategy).
    */
   MARKET_DISCOVERY_QUESTION_REGEX: z.string().default(''),
+  /**
+   * Re-run market discovery every N ms. 0 = disabled (one-shot at
+   * startup; equivalent to old behavior). Recommended for weather
+   * markets which resolve in 1-3 days; pick something like 3600000
+   * (1h) so newly listed markets show up and resolved ones drop out.
+   */
+  MARKET_DISCOVERY_REFRESH_MS: IntStr.default('0').pipe(z.number().int().nonnegative()),
 
   // --- SmartMoneyFollower ---
   SMART_MONEY_DATA_API_HOST: z.string().url().default('https://data-api.polymarket.com'),
@@ -151,6 +158,7 @@ export interface Config {
     readonly limit: number;
     readonly requireRewards: boolean;
     readonly questionRegex?: RegExp;
+    readonly refreshMs: number;
   };
   readonly smartMoney: {
     readonly dataApiHost: string;
@@ -246,6 +254,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ...(parsed.MARKET_DISCOVERY_QUESTION_REGEX
         ? { questionRegex: new RegExp(parsed.MARKET_DISCOVERY_QUESTION_REGEX, 'i') }
         : {}),
+      refreshMs: parsed.MARKET_DISCOVERY_REFRESH_MS,
     },
     smartMoney: {
       dataApiHost: parsed.SMART_MONEY_DATA_API_HOST,

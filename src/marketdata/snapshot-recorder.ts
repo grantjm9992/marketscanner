@@ -8,14 +8,19 @@ import type { MarketDataFeed } from './feed.js';
  * update to the snapshot store. Side-effecting observer only — does not
  * mutate or interfere with strategy execution. Writes are fire-and-forget.
  *
- * Enable via config (`recordSnapshots: true`).
+ * Logs a periodic summary so you can see ingestion is healthy without
+ * tailing every event.
  */
 export class SnapshotRecorder {
   private attached = false;
+  private writesSinceLog = 0;
+  private errorsSinceLog = 0;
+  private logTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly store: MarketSnapshotStore,
     private readonly logger: Logger,
+    private readonly summaryIntervalMs = 60_000,
   ) {}
 
   attach(feed: MarketDataFeed): void {
@@ -23,11 +28,41 @@ export class SnapshotRecorder {
     feed.onBookUpdate((book) => this.onBook(book));
     this.attached = true;
     this.logger.info('snapshot-recorder: attached');
+    if (this.summaryIntervalMs > 0) {
+      this.logTimer = setInterval(() => this.emitSummary(), this.summaryIntervalMs);
+    }
+  }
+
+  detach(): void {
+    if (this.logTimer) {
+      clearInterval(this.logTimer);
+      this.logTimer = null;
+    }
   }
 
   private onBook(book: OrderBook): void {
-    this.store.record(book).catch((err: unknown) => {
-      this.logger.error({ err }, 'snapshot-recorder: failed to record');
-    });
+    this.store
+      .record(book)
+      .then(() => {
+        this.writesSinceLog += 1;
+      })
+      .catch((err: unknown) => {
+        this.errorsSinceLog += 1;
+        this.logger.error({ err }, 'snapshot-recorder: failed to record');
+      });
+  }
+
+  private emitSummary(): void {
+    if (this.writesSinceLog === 0 && this.errorsSinceLog === 0) return;
+    this.logger.info(
+      {
+        writes: this.writesSinceLog,
+        errors: this.errorsSinceLog,
+        windowMs: this.summaryIntervalMs,
+      },
+      'snapshot-recorder: summary',
+    );
+    this.writesSinceLog = 0;
+    this.errorsSinceLog = 0;
   }
 }

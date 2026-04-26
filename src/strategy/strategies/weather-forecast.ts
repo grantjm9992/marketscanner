@@ -105,6 +105,7 @@ export class WeatherForecastStrategy implements Strategy {
       ctx.market.conditionId,
       ctx.market.question,
       ctx.clock.now(),
+      ctx.logger,
     );
     if (!question) return [];
 
@@ -124,8 +125,15 @@ export class WeatherForecastStrategy implements Strategy {
       const key = `${forecastQuery.latitude},${forecastQuery.longitude}|${forecastQuery.date}`;
       if (!this.inFlight.has(key)) {
         this.inFlight.add(key);
+        ctx.logger.info(
+          { city: question.city.displayName, date: question.date },
+          'weather-forecast: fetching forecast (cache miss)',
+        );
         void this.forecasts
           .forecast(forecastQuery)
+          .then(() => {
+            ctx.logger.debug({ key }, 'weather-forecast: forecast fetched');
+          })
           .catch((err: unknown) => {
             ctx.logger.error({ err, key }, 'weather-forecast: fetch failed');
           })
@@ -200,11 +208,30 @@ export class WeatherForecastStrategy implements Strategy {
     marketId: string,
     title: string,
     refDate: Date,
+    logger: import('../../logging/logger.js').Logger,
   ): WeatherQuestion | null {
     const cached = this.parsed.get(marketId);
     if (cached) return cached.question;
     const question = parseWeatherQuestion(title, refDate);
     this.parsed.set(marketId, { question });
+    if (question) {
+      logger.info(
+        {
+          marketId,
+          city: question.city.displayName,
+          variable: question.variable,
+          comparison: question.comparison,
+          thresholdC: question.thresholdC,
+          date: question.date,
+        },
+        'weather-forecast: parsed market',
+      );
+    } else {
+      logger.debug(
+        { marketId, title },
+        'weather-forecast: title did not match weather pattern; skipping',
+      );
+    }
     return question;
   }
 
