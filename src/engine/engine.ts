@@ -101,8 +101,12 @@ export class Engine {
       this.heartbeatTimer = setInterval(() => this.heartbeat(), heartbeatMs);
     }
 
+    const marketList = [...this.markets.values()].map((m) => ({
+      id: m.conditionId,
+      question: m.question,
+    }));
     this.opts.logger.info(
-      { strategy: this.opts.strategy.name, markets: this.markets.size },
+      { strategy: this.opts.strategy.name, markets: this.markets.size, marketList },
       'engine: started',
     );
   }
