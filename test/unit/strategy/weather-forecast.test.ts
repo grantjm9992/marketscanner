@@ -189,4 +189,88 @@ describe('WeatherForecastStrategy', () => {
     expect(sigs.length).toBe(0);
     expect(src.fetchCalls).toBe(0);
   });
+
+  describe('tradeDirection gates', () => {
+    it('sell_only suppresses a BUY signal that would otherwise fire', () => {
+      const src = new StubForecastSource();
+      // Forecast 30°C, threshold 25°C → very high P(YES). Market YES
+      // at 0.50 → big BUY edge in 'both' mode.
+      src.set(
+        { latitude: 37.5665, longitude: 126.978, date: '2026-04-26' },
+        { date: '2026-04-26', highC: 30, lowC: 18 },
+      );
+      const s = new WeatherForecastStrategy(src, {
+        ...DEFAULT_WEATHER_PARAMS,
+        tradeDirection: 'sell_only',
+      });
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const sigs = s.onBookUpdate(
+        book({ bids: [[0.49, 100]], asks: [[0.5, 100]] }),
+        ctx('Will the highest temperature in Seoul exceed 25°C on 2026-04-26?', clock),
+      );
+      expect(sigs.length).toBe(0);
+    });
+
+    it('sell_only still emits SELL on overpriced YES', () => {
+      const src = new StubForecastSource();
+      // Forecast 22°C, threshold 30°C → P(YES) ≈ 0. Market bidding
+      // 30c for YES — big SELL edge.
+      src.set(
+        { latitude: 37.5665, longitude: 126.978, date: '2026-04-26' },
+        { date: '2026-04-26', highC: 22, lowC: 12 },
+      );
+      const s = new WeatherForecastStrategy(src, {
+        ...DEFAULT_WEATHER_PARAMS,
+        tradeDirection: 'sell_only',
+      });
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const sigs = s.onBookUpdate(
+        book({ bids: [[0.3, 100]], asks: [[0.31, 100]] }),
+        ctx('Will the highest temperature in Seoul exceed 30°C on 2026-04-26?', clock),
+      );
+      expect(sigs.length).toBe(1);
+      const sig = sigs[0];
+      if (sig?.kind !== 'PLACE_ORDER') throw new Error('expected PLACE_ORDER');
+      expect(sig.request.side).toBe('SELL');
+    });
+
+    it('buy_only suppresses a SELL signal that would otherwise fire', () => {
+      const src = new StubForecastSource();
+      src.set(
+        { latitude: 37.5665, longitude: 126.978, date: '2026-04-26' },
+        { date: '2026-04-26', highC: 22, lowC: 12 },
+      );
+      const s = new WeatherForecastStrategy(src, {
+        ...DEFAULT_WEATHER_PARAMS,
+        tradeDirection: 'buy_only',
+      });
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const sigs = s.onBookUpdate(
+        book({ bids: [[0.3, 100]], asks: [[0.31, 100]] }),
+        ctx('Will the highest temperature in Seoul exceed 30°C on 2026-04-26?', clock),
+      );
+      expect(sigs.length).toBe(0);
+    });
+
+    it('buy_only still emits BUY on underpriced YES', () => {
+      const src = new StubForecastSource();
+      src.set(
+        { latitude: 37.5665, longitude: 126.978, date: '2026-04-26' },
+        { date: '2026-04-26', highC: 30, lowC: 18 },
+      );
+      const s = new WeatherForecastStrategy(src, {
+        ...DEFAULT_WEATHER_PARAMS,
+        tradeDirection: 'buy_only',
+      });
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const sigs = s.onBookUpdate(
+        book({ bids: [[0.49, 100]], asks: [[0.5, 100]] }),
+        ctx('Will the highest temperature in Seoul exceed 25°C on 2026-04-26?', clock),
+      );
+      expect(sigs.length).toBe(1);
+      const sig = sigs[0];
+      if (sig?.kind !== 'PLACE_ORDER') throw new Error('expected PLACE_ORDER');
+      expect(sig.request.side).toBe('BUY');
+    });
+  });
 });

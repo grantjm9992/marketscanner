@@ -272,6 +272,39 @@ describe('discoverMarkets', () => {
     expect(out[0]?.rewardsMinSize).toBeNull();
   });
 
+  it('questionRegex filters by case-insensitive title match', async () => {
+    const pages: RawShape[][] = [
+      [
+        {
+          conditionId: '0xtemp',
+          question: 'Will the highest temperature in Seoul exceed 30C?',
+          endDate: '2026-06-01T00:00:00Z',
+          volume24hr: 1,
+        },
+        {
+          conditionId: '0xelection',
+          question: 'Will Trump win the 2028 election?',
+          endDate: '2026-06-01T00:00:00Z',
+          volume24hr: 1,
+        },
+        {
+          conditionId: '0xsnow',
+          question: 'How much snow will fall in NYC?',
+          endDate: '2026-06-01T00:00:00Z',
+          volume24hr: 1,
+        },
+      ],
+    ];
+    const out = await discoverMarkets({
+      gammaHost: 'https://example.com',
+      filters: { questionRegex: /temperature|weather|rain|snow/i },
+      clock: clock(),
+      logger,
+      fetcher: fakeFetcher(pages),
+    });
+    expect(out.map((m) => m.conditionId).sort()).toEqual(['0xsnow', '0xtemp']);
+  });
+
   it('requireRewards filters out markets with rewardsDailyRate === 0', async () => {
     const pages: RawShape[][] = [
       [

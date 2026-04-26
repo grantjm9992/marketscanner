@@ -14,6 +14,13 @@ export interface DiscoveryFilters {
   readonly maxSpread?: number;
   /** If true, only return markets with positive CLOB maker-rewards rate. */
   readonly requireRewards?: boolean;
+  /**
+   * Optional regex applied case-insensitively to the market question.
+   * Markets whose question doesn't match are dropped. Useful for
+   * scoping discovery to a topic the strategy understands (e.g.
+   * `temperature|weather|rain|snow` for the weather-forecast strategy).
+   */
+  readonly questionRegex?: RegExp;
   /** Cap the number of markets returned. Default 10. */
   readonly limit?: number;
   /** Number of markets fetched per Gamma request. Default 100. */
@@ -122,6 +129,7 @@ export async function discoverMarkets(
     minSpread: 0,
     maxSpread: 0,
     requireRewards: 0,
+    questionRegex: 0,
   };
 
   for (let page = 0; page < maxPages; page += 1) {
@@ -241,11 +249,20 @@ function normalize(raw: GammaMarketRaw): DiscoveredMarket | null {
  * passes everything. Used both for filtering and for reject-reason
  * counters in the discovery summary log.
  */
+type FilterReason =
+  | 'category'
+  | 'minVolume'
+  | 'minDays'
+  | 'minSpread'
+  | 'maxSpread'
+  | 'requireRewards'
+  | 'questionRegex';
+
 function firstFailingFilter(
   m: DiscoveredMarket,
   f: DiscoveryFilters,
   now: Date,
-): 'category' | 'minVolume' | 'minDays' | 'minSpread' | 'maxSpread' | 'requireRewards' | null {
+): FilterReason | null {
   if (f.categories && f.categories.length > 0) {
     const wantedLower = f.categories.map((c) => c.toLowerCase());
     if (!wantedLower.includes(m.category.toLowerCase())) return 'category';
@@ -265,6 +282,9 @@ function firstFailingFilter(
   }
   if (f.requireRewards === true && m.rewardsDailyRateUsd <= 0) {
     return 'requireRewards';
+  }
+  if (f.questionRegex && !f.questionRegex.test(m.question)) {
+    return 'questionRegex';
   }
   return null;
 }

@@ -200,17 +200,42 @@ Phase 1 caveats:
 - **`WEATHER_MAX_YES_PRICE=0.97` by default.** At 99¢ NO, one wrong call wipes out 99 winners. Calibration is everything; staying away from the extremes is the safe failure mode until you know your model is reliable.
 - **Conservative stddev.** Overstating forecast uncertainty makes the strategy stake less. Tune downward (i.e. tighten in `forecast-prob.ts`) once you've calibrated against real resolution outcomes.
 
-To run:
+To run with discovery scoped to weather markets:
 
 ```bash
 STRATEGY_NAME=weather-forecast
-# Either pin some weather markets explicitly:
-STRATEGY_MARKETS=0xCONDITION_ID_1,0xCONDITION_ID_2
-# Or let discovery surface them:
 MARKET_DISCOVERY_ENABLED=true
+MARKET_DISCOVERY_QUESTION_REGEX=temperature|weather|rain|snow|hottest|coldest
+MARKET_DISCOVERY_LIMIT=20
 ```
 
-Discovery doesn't currently filter for "weather" markets specifically — the strategy itself silently no-ops on non-weather titles. If you find weather-market discovery worth doing, it's a category-string filter on Gamma's `events[].slug` (e.g. include slugs containing "temperature").
+The regex (case-insensitive, applied to the market title) keeps discovery from surfacing markets the parser will silently skip anyway.
+
+#### Mode presets
+
+The strategy supports three trade-direction modes, configurable via `WEATHER_TRADE_DIRECTION`. The two extreme modes correspond to the two real-world traders we've seen succeed at this:
+
+**`sell_only` — the swisstony pattern.** Sell YES at near-certainty prices when the model says the outcome is essentially impossible. Tiny per-trade returns (1-3%), high frequency, requires near-perfect calibration.
+
+```bash
+WEATHER_TRADE_DIRECTION=sell_only
+WEATHER_MIN_YES_PRICE=0.70   # only act when YES > 70¢
+WEATHER_MAX_YES_PRICE=0.99
+WEATHER_MIN_EDGE=0.02        # small edges OK at high-conviction prices
+WEATHER_ORDER_USD=50         # bigger size to make the small % matter
+```
+
+**`buy_only` — the maskache2 pattern.** Buy YES at long-shot prices (8-26¢) when the model says the actual probability is much higher. Large per-trade returns (200-900%) but lower hit rate and higher variance.
+
+```bash
+WEATHER_TRADE_DIRECTION=buy_only
+WEATHER_MIN_YES_PRICE=0.02   # take 2¢ long shots
+WEATHER_MAX_YES_PRICE=0.30
+WEATHER_MIN_EDGE=0.10        # need bigger edge to justify the variance
+WEATHER_ORDER_USD=10         # smaller size — more trades, more variance
+```
+
+**`both` (default) — let the model pick the side.** Either direction with edge above `minEdge`. Most flexible, but mixes two very different risk profiles in your PnL — track results per direction if you want to know which one's working.
 
 ## Inspecting the running bot
 
