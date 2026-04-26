@@ -146,7 +146,7 @@ If a strategy looks like it's printing money in paper mode, **the default assump
 
 ## Strategies
 
-Three are bundled. Pick one via `STRATEGY_NAME` in `.env`.
+Four are bundled. Pick one via `STRATEGY_NAME` in `.env`.
 
 ### `wide-spread-market-maker` (default)
 
@@ -180,6 +180,37 @@ Edge model: `rewards $/day × your share of qualifying volume − adverse-select
 Two non-obvious things to know:
 - This strategy **does nothing on markets without rewards data**. Always pair with `MARKET_DISCOVERY_REQUIRE_REWARDS=true` so discovery only surfaces qualifying markets.
 - It quotes near-mid, which is *more* adversely-selected than WSMM. Don't be surprised if fill PnL is worse than WSMM on the same markets — the rewards drip is supposed to make up the difference. Track both PnL and accumulated rewards separately to know if it's working.
+
+### `weather-forecast`
+
+Forecast-based mispricing on weather markets — the closest thing to actual model-driven alpha in the bundle. For each tracked market on each book update:
+
+1. Parse the title (`Will the highest temperature in Seoul exceed 30°C on 2026-04-30?`) into a structured question.
+2. Look up the OpenMeteo forecast for that (city, date) — free, no API key, cached for 1h.
+3. Compute model `P(YES)` from the forecast mean and a horizon-dependent stddev (1-day = 1.5°C, 7-day = 4.5°C).
+4. Compare to market YES price; if `|model − market| ≥ minEdge` and the market price is inside `[minYesPrice, maxYesPrice]`, take the favorable side at the touch.
+
+Why this is different from the other three: there's an external source of truth (the forecast) that the market doesn't fully price in. Maker strategies fight for spread; arb is rare; this is just *a better model than the market has*.
+
+Phase 1 caveats:
+
+- **Hardcoded city dictionary.** ~25 major cities under `src/forecasts/weather/cities.ts`. Markets in unsupported cities are no-ops. Phase 2 will geocode on demand.
+- **7-day forecast horizon max.** Longer-dated markets are skipped — forecast skill drops fast past a week.
+- **Fixed-fraction sizing.** No Kelly, no edge-scaling. Set `WEATHER_ORDER_USD` to your comfort level.
+- **`WEATHER_MAX_YES_PRICE=0.97` by default.** At 99¢ NO, one wrong call wipes out 99 winners. Calibration is everything; staying away from the extremes is the safe failure mode until you know your model is reliable.
+- **Conservative stddev.** Overstating forecast uncertainty makes the strategy stake less. Tune downward (i.e. tighten in `forecast-prob.ts`) once you've calibrated against real resolution outcomes.
+
+To run:
+
+```bash
+STRATEGY_NAME=weather-forecast
+# Either pin some weather markets explicitly:
+STRATEGY_MARKETS=0xCONDITION_ID_1,0xCONDITION_ID_2
+# Or let discovery surface them:
+MARKET_DISCOVERY_ENABLED=true
+```
+
+Discovery doesn't currently filter for "weather" markets specifically — the strategy itself silently no-ops on non-weather titles. If you find weather-market discovery worth doing, it's a category-string filter on Gamma's `events[].slug` (e.g. include slugs containing "temperature").
 
 ## Inspecting the running bot
 

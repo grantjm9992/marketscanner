@@ -23,6 +23,8 @@ import { DefaultRiskManager } from './risk/risk-manager.js';
 import { WideSpreadMarketMaker } from './strategy/strategies/wide-spread-market-maker.js';
 import { SmartMoneyFollower } from './strategy/strategies/smart-money-follower.js';
 import { RewardedMarketMaker } from './strategy/strategies/rewarded-market-maker.js';
+import { WeatherForecastStrategy } from './strategy/strategies/weather-forecast.js';
+import { OpenMeteoForecastSource } from './forecasts/weather/open-meteo.js';
 import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
 import type { Strategy } from './strategy/strategy.js';
 import type { Market } from './domain/market.js';
@@ -176,7 +178,7 @@ async function main(): Promise<void> {
   }
 
   // --- Strategy ---
-  const strategy = buildStrategy(config);
+  const strategy = buildStrategy(config, logger);
 
   // --- Wallet feed (optional, only when strategy uses it AND wallets are configured) ---
   let walletFeed: import('./marketdata/wallet-trade-feed.js').WalletTradeFeed | undefined;
@@ -412,7 +414,7 @@ function normalizeMarket(
   };
 }
 
-function buildStrategy(config: Config): Strategy {
+function buildStrategy(config: Config, logger: import('./logging/logger.js').Logger): Strategy {
   switch (config.strategy.name) {
     case 'wide-spread-market-maker':
       return new WideSpreadMarketMaker();
@@ -427,6 +429,20 @@ function buildStrategy(config: Config): Strategy {
       });
     case 'rewarded-market-maker':
       return new RewardedMarketMaker();
+    case 'weather-forecast': {
+      const forecasts = new OpenMeteoForecastSource({
+        host: config.weather.openMeteoHost,
+        logger,
+      });
+      return new WeatherForecastStrategy(forecasts, {
+        minEdge: config.weather.minEdge,
+        orderUsd: config.weather.orderUsd,
+        maxOrderSize: config.weather.maxOrderSize,
+        maxYesPrice: config.weather.maxYesPrice,
+        minYesPrice: config.weather.minYesPrice,
+        perMarketCooldownMs: config.weather.perMarketCooldownMs,
+      });
+    }
     default:
       throw new Error(`Unknown strategy: ${config.strategy.name}`);
   }

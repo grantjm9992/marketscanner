@@ -88,6 +88,15 @@ const EnvSchema = z.object({
   SMART_MONEY_MAX_DRIFT_CENTS: NumStr.default('0.03').pipe(z.number().nonnegative()),
   SMART_MONEY_EXECUTION_MODE: z.enum(['taker_market', 'taker_limit_at_touch']).default('taker_limit_at_touch'),
   SMART_MONEY_PER_MARKET_COOLDOWN_MS: IntStr.default('300000').pipe(z.number().int().nonnegative()),
+
+  // --- Weather forecast strategy ---
+  WEATHER_OPEN_METEO_HOST: z.string().url().default('https://api.open-meteo.com/v1/forecast'),
+  WEATHER_MIN_EDGE: NumStr.default('0.05').pipe(z.number().nonnegative()),
+  WEATHER_ORDER_USD: NumStr.default('20').pipe(z.number().positive()),
+  WEATHER_MAX_ORDER_SIZE: IntStr.default('200').pipe(z.number().int().positive()),
+  WEATHER_MAX_YES_PRICE: NumStr.default('0.97').pipe(z.number().min(0).max(1)),
+  WEATHER_MIN_YES_PRICE: NumStr.default('0.03').pipe(z.number().min(0).max(1)),
+  WEATHER_PER_MARKET_COOLDOWN_MS: IntStr.default('600000').pipe(z.number().int().nonnegative()),
 });
 
 export interface Config {
@@ -143,6 +152,15 @@ export interface Config {
     readonly maxAgeMs: number;
     readonly maxDriftCents: number;
     readonly executionMode: 'taker_market' | 'taker_limit_at_touch';
+    readonly perMarketCooldownMs: number;
+  };
+  readonly weather: {
+    readonly openMeteoHost: string;
+    readonly minEdge: number;
+    readonly orderUsd: number;
+    readonly maxOrderSize: number;
+    readonly maxYesPrice: number;
+    readonly minYesPrice: number;
     readonly perMarketCooldownMs: number;
   };
 }
@@ -226,6 +244,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxDriftCents: parsed.SMART_MONEY_MAX_DRIFT_CENTS,
       executionMode: parsed.SMART_MONEY_EXECUTION_MODE,
       perMarketCooldownMs: parsed.SMART_MONEY_PER_MARKET_COOLDOWN_MS,
+    },
+    weather: {
+      openMeteoHost: parsed.WEATHER_OPEN_METEO_HOST,
+      minEdge: parsed.WEATHER_MIN_EDGE,
+      orderUsd: parsed.WEATHER_ORDER_USD,
+      maxOrderSize: parsed.WEATHER_MAX_ORDER_SIZE,
+      maxYesPrice: parsed.WEATHER_MAX_YES_PRICE,
+      minYesPrice: parsed.WEATHER_MIN_YES_PRICE,
+      perMarketCooldownMs: parsed.WEATHER_PER_MARKET_COOLDOWN_MS,
     },
   };
   return cfg;
