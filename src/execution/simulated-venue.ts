@@ -9,7 +9,7 @@ import type {
   OrderStatus,
   Side,
 } from '../domain/order.js';
-import type { OrderBook, PriceLevel } from '../domain/market.js';
+import type { Market, OrderBook, PriceLevel } from '../domain/market.js';
 import type { Position } from '../domain/portfolio.js';
 import type { Clock } from '../engine/clock.js';
 import type { ExecutionVenue } from './venue.js';
@@ -64,9 +64,32 @@ export class SimulatedVenue implements ExecutionVenue {
   // sharing the same SQLite trade log. Without this, a query that joins
   // ORDER_PLACED to CANCEL on order_id can match across runs.
   private readonly idPrefix = `sim-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}-`;
+  /** Mutable copy of the market specs the venue knows about. */
+  private readonly marketSpecs = new Map<string, MarketSpec>();
 
   constructor(private readonly opts: SimulatedVenueOptions) {
     this.cash = opts.startingCashUsd;
+    for (const [k, v] of opts.markets) this.marketSpecs.set(k, v);
+  }
+
+  /**
+   * Register (or replace) a market spec at runtime. Used by the engine
+   * when MarketRefresher discovers a new market.
+   */
+  registerMarket(market: Market): void {
+    this.marketSpecs.set(market.conditionId, {
+      marketId: market.conditionId,
+      tickSize: market.tickSize,
+      minOrderSize: market.minOrderSize,
+    });
+  }
+
+  /**
+   * Drop a market spec. Open orders on this market remain — caller is
+   * expected to cancel them before unregistering.
+   */
+  unregisterMarket(marketId: string): void {
+    this.marketSpecs.delete(marketId);
   }
 
   // --- ExecutionVenue interface ---
@@ -383,7 +406,7 @@ export class SimulatedVenue implements ExecutionVenue {
   }
 
   private validate(req: OrderRequest): string | null {
-    const spec = this.opts.markets.get(req.marketId);
+    const spec = this.marketSpecs.get(req.marketId);
     if (!spec) return `unknown market: ${req.marketId}`;
     if ((req.size as number) < (spec.minOrderSize as number)) {
       return `size ${req.size} below minOrderSize ${spec.minOrderSize}`;

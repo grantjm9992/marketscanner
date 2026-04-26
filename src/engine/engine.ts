@@ -15,13 +15,11 @@ export interface PortfolioProvider {
   snapshot(): Portfolio;
 }
 
-/**
- * Build a PortfolioProvider that reads cash + positions from a venue. The
- * `SimulatedVenue` exposes `snapshot()` directly; the `PolymarketVenue`
- * needs a small adapter that polls cash from on-chain (TBD).
- */
 export interface SnapshotableVenue {
-  snapshot(): { cashUsd: import('../domain/money.js').Usd; positions: readonly import('../domain/portfolio.js').Position[] };
+  snapshot(): {
+    cashUsd: import('../domain/money.js').Usd;
+    positions: readonly import('../domain/portfolio.js').Position[];
+  };
 }
 
 export class VenuePortfolioProvider implements PortfolioProvider {
@@ -32,6 +30,15 @@ export class VenuePortfolioProvider implements PortfolioProvider {
   }
 }
 
+/**
+ * Hook the engine calls on the venue when a market is added/removed at
+ * runtime. SimulatedVenue implements this; PolymarketVenue is a no-op.
+ */
+export interface DynamicMarketsVenue {
+  registerMarket?(market: Market): void;
+  unregisterMarket?(marketId: string): void;
+}
+
 export interface EngineOptions {
   readonly feed: MarketDataFeed;
   readonly venue: ExecutionVenue;
@@ -40,39 +47,27 @@ export interface EngineOptions {
   readonly portfolioProvider: PortfolioProvider;
   readonly logger: Logger;
   readonly clock: Clock;
-  readonly markets: ReadonlyMap<string, Market>; // marketId -> Market
-  readonly shutdownGraceMs?: number; // how long to wait for cancels on stop
-  /**
-   * Optional wallet-activity feed. Engine subscribes only when both this
-   * is provided and the strategy implements `onWalletTrade`.
-   */
+  readonly markets: ReadonlyMap<string, Market>;
+  readonly shutdownGraceMs?: number;
   readonly walletFeed?: WalletTradeFeed;
+  /** Heartbeat log cadence. Default 60_000 (1 min). 0 disables. */
+  readonly heartbeatIntervalMs?: number;
 }
 
-/**
- * Wires everything together. The composition root (main.ts) decides which
- * concrete venue/feed are passed in. The engine itself is mode-agnostic.
- *
- * Flow:
- *   1. Feed emits OrderBook
- *   2. Engine builds StrategyContext (fresh portfolio + open orders)
- *   3. Strategy returns Signal[]
- *   4. Each signal goes through RiskManager.approve()
- *   5. Approved → venue.placeOrder / venue.cancelOrder
- *   6. Fills flow back: strategy.onFill + risk.onFill
- *
- * Shutdown:
- *   1. Stop feed
- *   2. venue.cancelAll()
- *   3. Wait up to shutdownGraceMs
- *   4. Caller closes DB
- */
 export class Engine {
-  private openOrders = new Map<string, Order>(); // OrderId -> Order
+  private openOrders = new Map<string, Order>();
+  private readonly markets = new Map<string, Market>();
   private started = false;
   private stopping = false;
+  private bookUpdatesSinceHeartbeat = 0;
+  private signalsSinceHeartbeat = 0;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly opts: EngineOptions) {}
+  constructor(private readonly opts: EngineOptions) {
+    for (const [k, v] of opts.markets) this.markets.set(k, v);
+  }
+
+  // --- lifecycle ---
 
   async start(): Promise<void> {
     if (this.started) return;
@@ -89,24 +84,38 @@ export class Engine {
       );
     }
 
-    for (const market of this.opts.markets.values()) {
+    for (const market of this.markets.values()) {
       // eslint-disable-next-line no-await-in-loop
       await this.opts.strategy.onStart(this.contextFor(market));
     }
 
-    await this.opts.feed.subscribe([...this.opts.markets.keys()]);
+    await this.opts.feed.subscribe([...this.markets.keys()]);
     await this.opts.feed.start();
     if (this.opts.walletFeed && typeof this.opts.strategy.onWalletTrade === 'function') {
       await this.opts.walletFeed.start();
       this.opts.logger.info('engine: wallet feed started');
     }
-    this.opts.logger.info({ strategy: this.opts.strategy.name }, 'engine: started');
+
+    const heartbeatMs = this.opts.heartbeatIntervalMs ?? 60_000;
+    if (heartbeatMs > 0) {
+      this.heartbeatTimer = setInterval(() => this.heartbeat(), heartbeatMs);
+    }
+
+    this.opts.logger.info(
+      { strategy: this.opts.strategy.name, markets: this.markets.size },
+      'engine: started',
+    );
   }
 
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
     this.opts.logger.info('engine: stopping');
+
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
 
     try {
       await this.opts.feed.stop();
@@ -136,7 +145,7 @@ export class Engine {
       await sleep(100);
     }
 
-    for (const market of this.opts.markets.values()) {
+    for (const market of this.markets.values()) {
       try {
         await this.opts.strategy.onStop(this.contextFor(market));
       } catch (err) {
@@ -144,6 +153,89 @@ export class Engine {
       }
     }
     this.opts.logger.info('engine: stopped');
+  }
+
+  // --- runtime market churn ---
+
+  /** Returns a defensive copy of currently-tracked market IDs. */
+  trackedMarketIds(): readonly string[] {
+    return [...this.markets.keys()];
+  }
+
+  /**
+   * Add a market at runtime. Subscribes the feed, registers with the
+   * venue (if it supports DynamicMarketsVenue), and runs strategy.onStart.
+   * Idempotent: re-adding an already-tracked market replaces the metadata.
+   */
+  async addMarket(market: Market): Promise<void> {
+    const isNew = !this.markets.has(market.conditionId);
+    this.markets.set(market.conditionId, market);
+
+    const dyn = this.opts.venue as unknown as DynamicMarketsVenue;
+    dyn.registerMarket?.(market);
+
+    if (isNew) {
+      try {
+        await this.opts.feed.subscribe([market.conditionId]);
+      } catch (err) {
+        this.opts.logger.error({ err, marketId: market.conditionId }, 'engine: feed.subscribe failed');
+      }
+      try {
+        await this.opts.strategy.onStart(this.contextFor(market));
+      } catch (err) {
+        this.opts.logger.error({ err, marketId: market.conditionId }, 'engine: strategy.onStart failed');
+      }
+      this.opts.logger.info(
+        { marketId: market.conditionId, question: market.question },
+        'engine: market added',
+      );
+    } else {
+      this.opts.logger.debug(
+        { marketId: market.conditionId },
+        'engine: market metadata refreshed',
+      );
+    }
+  }
+
+  /**
+   * Remove a market at runtime. Cancels any open orders on it, unsubscribes
+   * the feed, unregisters with the venue, and runs strategy.onStop.
+   * No-op if the market wasn't tracked.
+   */
+  async removeMarket(marketId: string): Promise<void> {
+    const market = this.markets.get(marketId);
+    if (!market) return;
+
+    // Cancel any open orders on this market.
+    const ours = [...this.openOrders.values()].filter((o) => o.marketId === marketId);
+    for (const o of ours) {
+      try {
+        await this.opts.venue.cancelOrder(o.id);
+      } catch (err) {
+        this.opts.logger.error({ err, orderId: o.id }, 'engine: cancel-on-remove failed');
+      }
+    }
+
+    try {
+      await this.opts.feed.unsubscribe([marketId]);
+    } catch (err) {
+      this.opts.logger.error({ err, marketId }, 'engine: feed.unsubscribe failed');
+    }
+
+    const dyn = this.opts.venue as unknown as DynamicMarketsVenue;
+    dyn.unregisterMarket?.(marketId);
+
+    try {
+      await this.opts.strategy.onStop(this.contextFor(market));
+    } catch (err) {
+      this.opts.logger.error({ err, marketId }, 'engine: strategy.onStop failed');
+    }
+
+    this.markets.delete(marketId);
+    this.opts.logger.info(
+      { marketId, question: market.question, cancelledOrders: ours.length },
+      'engine: market removed',
+    );
   }
 
   // --- internals ---
@@ -155,6 +247,16 @@ export class Engine {
       } else {
         this.openOrders.delete(o.id);
       }
+      this.opts.logger.debug(
+        {
+          orderId: o.id,
+          status: o.status,
+          side: o.side,
+          marketId: o.marketId,
+          filled: o.filledSize,
+        },
+        'engine: order update',
+      );
     });
     this.opts.venue.onFill((f) => this.handleFill(f));
   }
@@ -163,11 +265,12 @@ export class Engine {
     if (this.stopping) return;
     if (this.opts.risk.isHalted()) return;
 
-    const market = this.opts.markets.get(book.marketId);
+    const market = this.markets.get(book.marketId);
     if (!market) {
       this.opts.logger.warn({ marketId: book.marketId }, 'engine: book for unknown market');
       return;
     }
+    this.bookUpdatesSinceHeartbeat += 1;
 
     let signals: readonly Signal[];
     try {
@@ -178,6 +281,18 @@ export class Engine {
       return;
     }
 
+    if (signals.length > 0) {
+      this.signalsSinceHeartbeat += signals.length;
+      this.opts.logger.info(
+        {
+          marketId: book.marketId,
+          signals: signals.length,
+          kinds: signals.map((s) => s.kind),
+        },
+        'engine: strategy emitted signals',
+      );
+    }
+
     for (const sig of signals) {
       void this.dispatchSignal(sig);
     }
@@ -185,7 +300,18 @@ export class Engine {
 
   private handleFill(fill: Fill): void {
     this.opts.risk.onFill(fill);
-    const market = this.opts.markets.get(fill.marketId);
+    this.opts.logger.info(
+      {
+        orderId: fill.orderId,
+        side: fill.side,
+        size: fill.size,
+        price: fill.price,
+        feeUsd: fill.feeUsd,
+        marketId: fill.marketId,
+      },
+      'engine: FILL',
+    );
+    const market = this.markets.get(fill.marketId);
     if (market) {
       try {
         this.opts.strategy.onFill(fill, this.contextFor(market));
@@ -200,13 +326,8 @@ export class Engine {
     if (this.stopping) return;
     if (this.opts.risk.isHalted()) return;
 
-    const market = this.opts.markets.get(trade.marketId);
-    if (!market) {
-      // Trade on a market we don't track. Strategies can't act on it
-      // (they have no Market metadata), so drop silently. Could be
-      // upgraded later to auto-add markets we see smart money trade.
-      return;
-    }
+    const market = this.markets.get(trade.marketId);
+    if (!market) return;
 
     const onWalletTrade = this.opts.strategy.onWalletTrade?.bind(this.opts.strategy);
     if (!onWalletTrade) return;
@@ -219,40 +340,86 @@ export class Engine {
       this.opts.risk.halt('strategy.onWalletTrade threw');
       return;
     }
+    if (signals.length > 0) {
+      this.signalsSinceHeartbeat += signals.length;
+      this.opts.logger.info(
+        {
+          marketId: trade.marketId,
+          walletAddress: trade.walletAddress,
+          signals: signals.length,
+        },
+        'engine: wallet-trade triggered signals',
+      );
+    }
     for (const sig of signals) void this.dispatchSignal(sig);
   }
 
   private async dispatchSignal(sig: Signal): Promise<void> {
-    const market =
-      sig.kind === 'PLACE_ORDER'
-        ? this.opts.markets.get(sig.request.marketId)
-        : undefined;
-    const ctx = market
-      ? { positions: this.portfolio().positions, openOrders: [...this.openOrders.values()] }
-      : { positions: this.portfolio().positions, openOrders: [...this.openOrders.values()] };
+    const ctx = {
+      positions: this.portfolio().positions,
+      openOrders: [...this.openOrders.values()],
+    };
 
     const decision = this.opts.risk.approve(sig, ctx);
     if (!decision.approved) {
-      this.opts.logger.warn({ sig, reason: decision.reason }, 'engine: signal rejected by risk');
+      this.opts.logger.warn(
+        { sig, reason: decision.reason },
+        'engine: signal rejected by risk',
+      );
       return;
     }
 
     try {
       if (sig.kind === 'PLACE_ORDER') {
-        await this.opts.venue.placeOrder(sig.request);
+        const order = await this.opts.venue.placeOrder(sig.request);
+        this.opts.logger.info(
+          {
+            orderId: order.id,
+            status: order.status,
+            side: sig.request.side,
+            type: sig.request.type,
+            size: sig.request.size,
+            limitPrice: sig.request.limitPrice,
+            marketId: sig.request.marketId,
+          },
+          'engine: ORDER PLACED',
+        );
       } else {
         await this.opts.venue.cancelOrder(sig.orderId);
+        this.opts.logger.info({ orderId: sig.orderId }, 'engine: ORDER CANCELLED');
       }
     } catch (err) {
       this.opts.logger.error({ err, sig }, 'engine: venue call failed');
     }
   }
 
+  private heartbeat(): void {
+    const portfolio = this.portfolio();
+    void this.opts.venue.getOpenOrders().then((open) => {
+      this.opts.logger.info(
+        {
+          markets: this.markets.size,
+          openOrders: open.length,
+          positions: portfolio.positions.length,
+          cashUsd: portfolio.cashUsd,
+          bookUpdates: this.bookUpdatesSinceHeartbeat,
+          signals: this.signalsSinceHeartbeat,
+          halted: this.opts.risk.isHalted(),
+        },
+        'engine: heartbeat',
+      );
+      this.bookUpdatesSinceHeartbeat = 0;
+      this.signalsSinceHeartbeat = 0;
+    });
+  }
+
   private contextFor(market: Market) {
     return {
       market,
       portfolio: this.portfolio(),
-      openOrders: [...this.openOrders.values()].filter((o) => o.marketId === market.conditionId),
+      openOrders: [...this.openOrders.values()].filter(
+        (o) => o.marketId === market.conditionId,
+      ),
       clock: this.opts.clock,
       logger: this.opts.logger,
     };

@@ -237,6 +237,39 @@ WEATHER_ORDER_USD=10         # smaller size — more trades, more variance
 
 **`both` (default) — let the model pick the side.** Either direction with edge above `minEdge`. Most flexible, but mixes two very different risk profiles in your PnL — track results per direction if you want to know which one's working.
 
+## Watching the bot
+
+Set `LOG_LEVEL=info` (the default) and you'll see, on stdout:
+
+- `engine: started` / `engine: stopping` — lifecycle.
+- `engine: market added` / `engine: market removed` — when MarketRefresher applies a discovery diff.
+- `engine: strategy emitted signals` — every time the strategy returns one or more signals.
+- `engine: ORDER PLACED` — every successful place; logs side, type, size, limitPrice, marketId.
+- `engine: ORDER CANCELLED` — every cancel.
+- `engine: FILL` — every fill, with size/price/fee.
+- `engine: signal rejected by risk` — when the risk manager blocks a signal (with reason).
+- `engine: heartbeat` (every 60s) — current markets count, open orders, positions, cash, and book updates / signals seen since the last heartbeat. The fastest way to spot "the bot's running but doing nothing".
+- `snapshot-recorder: summary` (every 60s) — writes + errors in the window. Confirms ingestion is healthy without log-spamming every book update.
+- `weather-forecast: parsed market` / `fetching forecast (cache miss)` — for the weather strategy specifically, logs each parsed question and each new forecast fetch.
+
+Set `LOG_LEVEL=debug` for per-book-update detail (very chatty).
+
+## Periodic market discovery
+
+By default discovery runs once at startup. For strategies operating on markets that resolve quickly (weather: 1-3 days), set `MARKET_DISCOVERY_REFRESH_MS` to a positive value and the bot will re-run discovery on that cadence:
+
+- New markets that match your filters are subscribed and added to the engine.
+- Markets that drop out of discovery (resolved, stopped accepting orders, fell below volume threshold) have their open orders cancelled, are unsubscribed, and are removed from the engine.
+- Markets unchanged across cycles are left alone — no churn.
+
+The refresh fires its first cycle after `intervalMs` (the initial market set comes from startup discovery). Each cycle logs a `market-refresher: cycle complete; applying diff` line with `toAdd` / `toRemove` counts.
+
+Recommended cadence:
+
+- **Weather**: `3600000` (1h) — markets resolve within a couple of days.
+- **Sports**: `21600000` (6h) — daily-ish events; new markets appear less often.
+- **Politics**: `86400000` (24h) — rarely a new market mid-day.
+
 ## Inspecting the running bot
 
 The trade log, snapshots, positions, and daily P&L go into either SQLite (default, single file at `./data/bot.db`) or Postgres (set `DATABASE_KIND=postgres` and `DATABASE_URL=...`). Same store interface either way; same queries work against both.

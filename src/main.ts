@@ -26,6 +26,7 @@ import { RewardedMarketMaker } from './strategy/strategies/rewarded-market-maker
 import { WeatherForecastStrategy } from './strategy/strategies/weather-forecast.js';
 import { OpenMeteoForecastSource } from './forecasts/weather/open-meteo.js';
 import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
+import { MarketRefresher } from './marketdata/market-refresher.js';
 import type { Strategy } from './strategy/strategy.js';
 import type { Market } from './domain/market.js';
 import { price, size, usd } from './domain/money.js';
@@ -216,9 +217,29 @@ async function main(): Promise<void> {
     ...(walletFeed ? { walletFeed } : {}),
   });
 
+  // --- Market refresher (optional, paper/live only) ---
+  let refresher: MarketRefresher | undefined;
+  if (
+    config.marketDiscovery.enabled &&
+    config.marketDiscovery.refreshMs > 0 &&
+    !isBacktest
+  ) {
+    const client = new ClobClient(config.polymarket.clobHost, config.polymarket.chainId);
+    refresher = new MarketRefresher({
+      engine,
+      logger,
+      clock,
+      gammaHost: config.marketDiscovery.gammaHost,
+      filters: buildDiscoveryFilters(config),
+      resolveMarket: makeMarketResolver(client, logger),
+      intervalMs: config.marketDiscovery.refreshMs,
+    });
+  }
+
   // Graceful shutdown.
   const shutdown = async (signal: string): Promise<void> => {
     logger.warn({ signal }, 'main: shutting down');
+    refresher?.stop();
     try {
       await engine.stop();
     } catch (err) {
@@ -242,6 +263,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   await engine.start();
+  refresher?.start();
   if (isBacktest) {
     // HistoricalFeed runs synchronously inside start(); stop cleanly.
     await shutdown('backtest-complete');
@@ -315,32 +337,65 @@ async function confirmLiveMode(config: Config): Promise<void> {
   }
 }
 
+/** Build the discovery filters object from config (used at startup AND in MarketRefresher). */
+function buildDiscoveryFilters(config: Config) {
+  return {
+    categories: config.marketDiscovery.categories,
+    minVolume24hUsd: config.marketDiscovery.minVolume24hUsd,
+    minDaysToResolution: config.marketDiscovery.minDaysToResolution,
+    minSpread: config.marketDiscovery.minSpread,
+    maxSpread: config.marketDiscovery.maxSpread,
+    requireRewards: config.marketDiscovery.requireRewards,
+    limit: config.marketDiscovery.limit,
+    ...(config.marketDiscovery.questionRegex
+      ? { questionRegex: config.marketDiscovery.questionRegex }
+      : {}),
+  };
+}
+
+/**
+ * Resolve a single conditionId to a Market by hitting CLOB getMarket.
+ * Used by both initial loadMarkets and the MarketRefresher.
+ */
+function makeMarketResolver(
+  client: ClobClient,
+  logger: import('./logging/logger.js').Logger,
+): import('./marketdata/market-refresher.js').MarketResolver {
+  return async (conditionId, rewards) => {
+    try {
+      const raw = (await client.getMarket(conditionId)) as RawMarket | { error?: string };
+      if ('error' in raw && raw.error) {
+        logger.error(
+          { conditionId, error: raw.error },
+          'main: CLOB rejected market',
+        );
+        return null;
+      }
+      const tokens = (raw as RawMarket).tokens ?? [];
+      if (tokens.length === 0) {
+        logger.warn({ conditionId }, 'main: CLOB market has no outcomes; skipping');
+        return null;
+      }
+      return normalizeMarket(conditionId, raw as RawMarket, rewards);
+    } catch (err) {
+      logger.error({ err, conditionId }, 'main: getMarket failed');
+      return null;
+    }
+  };
+}
+
 async function loadMarkets(
   config: Config,
   logger: import('./logging/logger.js').Logger,
   clock: import('./engine/clock.js').Clock,
 ): Promise<ReadonlyMap<string, Market>> {
   const ids = new Set<string>(config.strategy.markets);
-
-  // Map of conditionId -> rewards info, populated from discovery so the
-  // RewardedMarketMaker strategy can read it via Market.rewards.
   const rewardsByMarketId = new Map<string, import('./domain/market.js').MarketRewards>();
 
   if (config.marketDiscovery.enabled) {
     const discovered = await discoverMarkets({
       gammaHost: config.marketDiscovery.gammaHost,
-      filters: {
-        categories: config.marketDiscovery.categories,
-        minVolume24hUsd: config.marketDiscovery.minVolume24hUsd,
-        minDaysToResolution: config.marketDiscovery.minDaysToResolution,
-        minSpread: config.marketDiscovery.minSpread,
-        maxSpread: config.marketDiscovery.maxSpread,
-        requireRewards: config.marketDiscovery.requireRewards,
-        limit: config.marketDiscovery.limit,
-        ...(config.marketDiscovery.questionRegex
-          ? { questionRegex: config.marketDiscovery.questionRegex }
-          : {}),
-      },
+      filters: buildDiscoveryFilters(config),
       clock,
       logger,
     });
@@ -368,24 +423,18 @@ async function loadMarkets(
   if (ids.size === 0) return out;
 
   const client = new ClobClient(config.polymarket.clobHost, config.polymarket.chainId);
+  const resolve = makeMarketResolver(client, logger);
   for (const conditionId of ids) {
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      const raw = (await client.getMarket(conditionId)) as RawMarket | { error?: string };
-      if ('error' in raw && raw.error) {
-        throw new Error(`CLOB rejected market ${conditionId}: ${String(raw.error)}`);
-      }
-      const tokens = (raw as RawMarket).tokens ?? [];
-      if (tokens.length === 0) {
-        throw new Error(
-          `Market ${conditionId} returned no outcomes. Likely an invalid condition ID — verify with the Gamma API or enable MARKET_DISCOVERY_ENABLED=true.`,
-        );
-      }
-      const rewards = rewardsByMarketId.get(conditionId);
-      out.set(conditionId, normalizeMarket(conditionId, raw as RawMarket, rewards));
-    } catch (err) {
-      logger.error({ err, conditionId }, 'main: failed to fetch market metadata');
-      throw err;
+    // eslint-disable-next-line no-await-in-loop
+    const market = await resolve(conditionId, rewardsByMarketId.get(conditionId));
+    if (market) out.set(conditionId, market);
+    else if (!config.marketDiscovery.enabled) {
+      // For hand-curated markets, the user expects all of them to be
+      // valid — fail loudly. Discovered markets come and go, so we just
+      // skip ones that fail at any point.
+      throw new Error(
+        `Market ${conditionId} could not be resolved. Verify the condition ID is correct.`,
+      );
     }
   }
   return out;
