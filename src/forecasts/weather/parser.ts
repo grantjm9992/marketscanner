@@ -1,5 +1,7 @@
 import { lookupCity, type CityCoords } from './cities.js';
 
+export type { CityCoords };
+
 export type Comparison = 'gte' | 'lte';
 
 export interface WeatherQuestion {
@@ -19,21 +21,23 @@ const RX = new RegExp(
   [
     'will\\s+the\\s+',
     '(highest|high|max(?:imum)?|lowest|low|min(?:imum)?)\\s+temperature\\s+',
-    'in\\s+([A-Za-z .\']+?)\\s+',
+    'in\\s+([\\p{L} .\']+?)\\s+',  // \p{L} matches any Unicode letter (accented cities)
     '(be|reach|exceed|hit|go\\s+above|go\\s+below|go\\s+under|fall\\s+below|stay\\s+above|stay\\s+below)\\s+',
     '(-?\\d+(?:\\.\\d+)?)\\s*°?\\s*(c|f|celsius|fahrenheit)?',
-    '(?:.*?\\bon\\s+(\\d{4}-\\d{2}-\\d{2}|[A-Za-z]+\\s+\\d{1,2}(?:,?\\s*\\d{4})?))?',
+    '(?:.*?\\bon\\s+(\\d{4}-\\d{2}-\\d{2}|[\\p{L}]+\\s+\\d{1,2}(?:,?\\s*\\d{4})?))?',
   ].join(''),
-  'i',
+  'iu',  // u flag required for \p{L} Unicode property escapes
 );
 
 /**
  * Parse a Polymarket weather market title into a structured question.
  * Returns null when the title doesn't match the expected templates or
- * the city isn't in our coords dictionary.
+ * the city isn't resolvable.
  *
- * Designed to be conservative — parsing failures are silent skips, not
- * errors. The strategy ignores any market the parser can't handle.
+ * `cityResolver` defaults to the hardcoded dictionary. Pass a runtime
+ * geocode cache (e.g. `GeocodeCache.get`) to support cities beyond the
+ * built-in set — on a miss the resolver fires a background fetch so the
+ * next call succeeds.
  *
  * `referenceDate` is needed to interpret natural-language dates like
  * "today" / "tomorrow" / "April 30" without a year.
@@ -41,6 +45,7 @@ const RX = new RegExp(
 export function parseWeatherQuestion(
   title: string,
   referenceDate: Date = new Date(),
+  cityResolver: (name: string) => CityCoords | null = lookupCity,
 ): WeatherQuestion | null {
   // Quick keyword tests (today / tomorrow) before the regex, since the
   // regex requires a literal date or month-day.
@@ -62,7 +67,7 @@ export function parseWeatherQuestion(
   const unit = (unitRaw ?? 'c').toLowerCase().startsWith('f') ? 'F' : 'C';
   const thresholdC = unit === 'F' ? ((value - 32) * 5) / 9 : value;
 
-  const city = lookupCity(cityRaw);
+  const city = cityResolver(cityRaw);
   if (!city) return null;
 
   const date = normalizeDate(dateRaw, referenceDate);

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   WeatherForecastStrategy,
   DEFAULT_WEATHER_PARAMS,
 } from '../../../src/strategy/strategies/weather-forecast.js';
+import { GeocodeCache } from '../../../src/forecasts/weather/geocode.js';
 import { price, size, usd } from '../../../src/domain/money.js';
 import type { Market, OrderBook } from '../../../src/domain/market.js';
 import type { StrategyContext } from '../../../src/strategy/context.js';
@@ -188,6 +189,90 @@ describe('WeatherForecastStrategy', () => {
     );
     expect(sigs.length).toBe(0);
     expect(src.fetchCalls).toBe(0);
+  });
+
+  describe('geocoding integration', () => {
+    it('fires geocode prefetch for unknown city and emits no signal on first tick', async () => {
+      const src = new StubForecastSource();
+      const fetcher = vi.fn().mockReturnValue(new Promise(() => {})); // never resolves
+      const geocodeCache = new GeocodeCache({
+        logger: createLogger({ level: 'silent' }),
+        fetcher,
+      });
+      const s = new WeatherForecastStrategy(src, DEFAULT_WEATHER_PARAMS, geocodeCache);
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const sigs = s.onBookUpdate(
+        book({ bids: [[0.3, 100]], asks: [[0.31, 100]] }),
+        ctx('Will the highest temperature in Kraków exceed 20°C on 2026-04-26?', clock),
+      );
+      expect(sigs.length).toBe(0);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const url = fetcher.mock.calls[0]?.[0] as string;
+      expect(url).toContain('Krak');
+    });
+
+    it('emits a signal once geocoding resolves', async () => {
+      const src = new StubForecastSource();
+      const geocodeResponse = new Response(
+        JSON.stringify({
+          results: [{ name: 'Kraków', latitude: 50.0647, longitude: 19.945 }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+      const fetcher = vi.fn().mockResolvedValue(geocodeResponse);
+      const geocodeCache = new GeocodeCache({
+        logger: createLogger({ level: 'silent' }),
+        fetcher,
+      });
+
+      // Pre-populate the forecast so it's available immediately.
+      src.set(
+        { latitude: 50.0647, longitude: 19.945, date: '2026-04-26' },
+        { date: '2026-04-26', highC: 25, lowC: 10 }, // 25°C > 20°C → likely YES
+      );
+
+      const s = new WeatherForecastStrategy(src, DEFAULT_WEATHER_PARAMS, geocodeCache);
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const b = book({ bids: [[0.1, 100]], asks: [[0.11, 100]] });
+      const c = ctx('Will the highest temperature in Kraków exceed 20°C on 2026-04-26?', clock);
+
+      // First tick — geocode request fires but hasn't resolved.
+      expect(s.onBookUpdate(b, c).length).toBe(0);
+
+      // Wait for the geocoding microtask.
+      await new Promise((r) => setTimeout(r, 0));
+
+      // Second tick — geocode resolved, question parses, forecast is hot.
+      const sigs = s.onBookUpdate(b, c);
+      expect(sigs.length).toBe(1);
+      expect(sigs[0]?.kind).toBe('PLACE_ORDER');
+    });
+
+    it('permanently skips a market once geocoding confirms city not found', async () => {
+      const src = new StubForecastSource();
+      const fetcher = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const geocodeCache = new GeocodeCache({
+        logger: createLogger({ level: 'silent' }),
+        fetcher,
+      });
+      const s = new WeatherForecastStrategy(src, DEFAULT_WEATHER_PARAMS, geocodeCache);
+      const clock = new FakeClock(new Date('2026-04-25T00:00:00Z'));
+      const b = book({ bids: [[0.3, 100]], asks: [[0.31, 100]] });
+      const c = ctx('Will the highest temperature in Fictoria exceed 20°C on 2026-04-26?', clock);
+
+      s.onBookUpdate(b, c); // fires prefetch
+      await new Promise((r) => setTimeout(r, 0)); // geocode resolves as not-found
+
+      // Second and third ticks — should not fire additional geocode requests.
+      s.onBookUpdate(b, c);
+      s.onBookUpdate(b, c);
+      expect(fetcher).toHaveBeenCalledTimes(1); // only one geocode call ever
+    });
   });
 
   describe('tradeDirection gates', () => {

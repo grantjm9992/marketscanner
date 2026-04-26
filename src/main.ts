@@ -20,11 +20,20 @@ import { HistoricalFeed } from './marketdata/historical-feed.js';
 import { SnapshotRecorder } from './marketdata/snapshot-recorder.js';
 import { discoverMarkets } from './marketdata/market-discovery.js';
 import { DefaultRiskManager } from './risk/risk-manager.js';
-import { WideSpreadMarketMaker } from './strategy/strategies/wide-spread-market-maker.js';
+import {
+  WideSpreadMarketMaker,
+  DEFAULT_PARAMS as WSMM_DEFAULTS,
+  type WideSpreadParams,
+} from './strategy/strategies/wide-spread-market-maker.js';
 import { SmartMoneyFollower } from './strategy/strategies/smart-money-follower.js';
-import { RewardedMarketMaker } from './strategy/strategies/rewarded-market-maker.js';
+import {
+  RewardedMarketMaker,
+  DEFAULT_REWARDED_PARAMS as RMM_DEFAULTS,
+  type RewardedMarketMakerParams,
+} from './strategy/strategies/rewarded-market-maker.js';
 import { WeatherForecastStrategy } from './strategy/strategies/weather-forecast.js';
 import { OpenMeteoForecastSource } from './forecasts/weather/open-meteo.js';
+import { GeocodeCache } from './forecasts/weather/geocode.js';
 import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
 import { MarketRefresher } from './marketdata/market-refresher.js';
 import type { Strategy } from './strategy/strategy.js';
@@ -167,8 +176,9 @@ async function main(): Promise<void> {
   }
 
   // --- Snapshot recorder (paper / live only) ---
+  let recorder: SnapshotRecorder | undefined;
   if (!isBacktest && config.recordSnapshots) {
-    const recorder = new SnapshotRecorder(stores.marketSnapshot, logger);
+    recorder = new SnapshotRecorder(stores.marketSnapshot, logger);
     recorder.attach(feed);
   }
 
@@ -240,6 +250,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.warn({ signal }, 'main: shutting down');
     refresher?.stop();
+    recorder?.detach();
     try {
       await engine.stop();
     } catch (err) {
@@ -467,9 +478,15 @@ function normalizeMarket(
 }
 
 function buildStrategy(config: Config, logger: import('./logging/logger.js').Logger): Strategy {
+  const overrides = config.strategy.params;
   switch (config.strategy.name) {
-    case 'wide-spread-market-maker':
-      return new WideSpreadMarketMaker();
+    case 'wide-spread-market-maker': {
+      const params: WideSpreadParams = { ...WSMM_DEFAULTS, ...(overrides as Partial<WideSpreadParams>) };
+      if (Object.keys(overrides).length > 0) {
+        logger.info({ params }, 'main: wide-spread-market-maker params applied from STRATEGY_PARAMS');
+      }
+      return new WideSpreadMarketMaker(params);
+    }
     case 'smart-money-follower':
       return new SmartMoneyFollower({
         copyNotionalUsd: config.smartMoney.copyUsd,
@@ -479,22 +496,32 @@ function buildStrategy(config: Config, logger: import('./logging/logger.js').Log
         executionMode: config.smartMoney.executionMode,
         perMarketCooldownMs: config.smartMoney.perMarketCooldownMs,
       });
-    case 'rewarded-market-maker':
-      return new RewardedMarketMaker();
+    case 'rewarded-market-maker': {
+      const params: RewardedMarketMakerParams = { ...RMM_DEFAULTS, ...(overrides as Partial<RewardedMarketMakerParams>) };
+      if (Object.keys(overrides).length > 0) {
+        logger.info({ params }, 'main: rewarded-market-maker params applied from STRATEGY_PARAMS');
+      }
+      return new RewardedMarketMaker(params);
+    }
     case 'weather-forecast': {
       const forecasts = new OpenMeteoForecastSource({
         host: config.weather.openMeteoHost,
         logger,
       });
-      return new WeatherForecastStrategy(forecasts, {
-        minEdge: config.weather.minEdge,
-        orderUsd: config.weather.orderUsd,
-        maxOrderSize: config.weather.maxOrderSize,
-        maxYesPrice: config.weather.maxYesPrice,
-        minYesPrice: config.weather.minYesPrice,
-        perMarketCooldownMs: config.weather.perMarketCooldownMs,
-        tradeDirection: config.weather.tradeDirection,
-      });
+      const geocodeCache = new GeocodeCache({ logger });
+      return new WeatherForecastStrategy(
+        forecasts,
+        {
+          minEdge: config.weather.minEdge,
+          orderUsd: config.weather.orderUsd,
+          maxOrderSize: config.weather.maxOrderSize,
+          maxYesPrice: config.weather.maxYesPrice,
+          minYesPrice: config.weather.minYesPrice,
+          perMarketCooldownMs: config.weather.perMarketCooldownMs,
+          tradeDirection: config.weather.tradeDirection,
+        },
+        geocodeCache,
+      );
     }
     default:
       throw new Error(`Unknown strategy: ${config.strategy.name}`);

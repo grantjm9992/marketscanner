@@ -9,7 +9,9 @@ import {
   parseWeatherQuestion,
   type WeatherQuestion,
 } from '../../forecasts/weather/parser.js';
+import { lookupCity } from '../../forecasts/weather/cities.js';
 import type { WeatherForecastSource } from '../../forecasts/weather/open-meteo.js';
+import type { GeocodeCache } from '../../forecasts/weather/geocode.js';
 import { probabilityYes } from '../../forecasts/weather/forecast-prob.js';
 
 export type TradeDirection =
@@ -90,6 +92,7 @@ export class WeatherForecastStrategy implements Strategy {
   constructor(
     private readonly forecasts: WeatherForecastSource,
     private readonly params: WeatherForecastParams = DEFAULT_WEATHER_PARAMS,
+    private readonly geocodeCache?: GeocodeCache,
   ) {}
 
   async onStart(_ctx: StrategyContext): Promise<void> {
@@ -212,9 +215,25 @@ export class WeatherForecastStrategy implements Strategy {
   ): WeatherQuestion | null {
     const cached = this.parsed.get(marketId);
     if (cached) return cached.question;
-    const question = parseWeatherQuestion(title, refDate);
-    this.parsed.set(marketId, { question });
-    if (question) {
+
+    // Track whether the resolver was called and what it returned so we
+    // can distinguish format-mismatch (regex never called the resolver)
+    // from city-miss (resolver called but returned null).
+    let attemptedCity: string | undefined;
+    let cityResolved = false;
+    const resolver = (name: string): import('../../forecasts/weather/parser.js').CityCoords | null => {
+      attemptedCity = name;
+      // GeocodeCache.get already checks the hardcoded dict first; when no
+      // cache is injected, fall back to the hardcoded dict directly.
+      const coords = this.geocodeCache ? this.geocodeCache.get(name) : lookupCity(name);
+      cityResolved = coords !== null;
+      return coords;
+    };
+
+    const question = parseWeatherQuestion(title, refDate, resolver);
+
+    if (question !== null) {
+      this.parsed.set(marketId, { question });
       logger.info(
         {
           marketId,
@@ -226,13 +245,42 @@ export class WeatherForecastStrategy implements Strategy {
         },
         'weather-forecast: parsed market',
       );
-    } else {
-      logger.debug(
-        { marketId, title },
-        'weather-forecast: title did not match weather pattern; skipping',
-      );
+      return question;
     }
-    return question;
+
+    // Parsing failed. Determine whether it's permanent or retriable.
+
+    if (cityResolved) {
+      // The city was found but something else in the question didn't parse
+      // (e.g. unrecognisable date format). Permanent skip.
+      this.parsed.set(marketId, { question: null });
+      logger.debug({ marketId, title }, 'weather-forecast: title did not match weather pattern; skipping');
+      return null;
+    }
+
+    if (!this.geocodeCache || attemptedCity === undefined) {
+      // No geocoder available, or the regex didn't even extract a city
+      // name (format mismatch). Permanent skip.
+      this.parsed.set(marketId, { question: null });
+      logger.debug({ marketId, title }, 'weather-forecast: title did not match weather pattern; skipping');
+      return null;
+    }
+
+    // The regex extracted a city name but it isn't in our dict yet.
+    const cityName = attemptedCity;
+    if (this.geocodeCache.isKnownMissing(cityName)) {
+      this.parsed.set(marketId, { question: null });
+      logger.debug({ marketId, cityName }, 'weather-forecast: city not found via geocoding; skipping');
+      return null;
+    }
+
+    // City is unknown but geocodable — fire a background request and
+    // retry on the next book update (don't cache null yet).
+    if (!this.geocodeCache.isPending(cityName)) {
+      this.geocodeCache.prefetch(cityName);
+      logger.info({ marketId, cityName }, 'weather-forecast: unknown city; geocoding in background');
+    }
+    return null;
   }
 
   private makeOrder(book: OrderBook, side: 'BUY' | 'SELL', touchPrice: number): OrderRequest | null {
