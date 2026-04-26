@@ -337,6 +337,9 @@ async function loadMarkets(
         maxSpread: config.marketDiscovery.maxSpread,
         requireRewards: config.marketDiscovery.requireRewards,
         limit: config.marketDiscovery.limit,
+        ...(config.marketDiscovery.questionRegex
+          ? { questionRegex: config.marketDiscovery.questionRegex }
+          : {}),
       },
       clock,
       logger,
@@ -441,6 +444,7 @@ function buildStrategy(config: Config, logger: import('./logging/logger.js').Log
         maxYesPrice: config.weather.maxYesPrice,
         minYesPrice: config.weather.minYesPrice,
         perMarketCooldownMs: config.weather.perMarketCooldownMs,
+        tradeDirection: config.weather.tradeDirection,
       });
     }
     default:

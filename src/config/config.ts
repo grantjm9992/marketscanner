@@ -76,6 +76,13 @@ const EnvSchema = z.object({
   MARKET_DISCOVERY_MAX_SPREAD: NumStr.default('0.10').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_LIMIT: IntStr.default('5').pipe(z.number().int().positive()),
   MARKET_DISCOVERY_REQUIRE_REWARDS: BoolStr.default('false'),
+  /**
+   * Optional case-insensitive regex applied to market questions.
+   * Empty string = no filter. Useful to scope discovery to a topic
+   * the strategy understands (e.g. `temperature|weather|rain|snow`
+   * for the weather-forecast strategy).
+   */
+  MARKET_DISCOVERY_QUESTION_REGEX: z.string().default(''),
 
   // --- SmartMoneyFollower ---
   SMART_MONEY_DATA_API_HOST: z.string().url().default('https://data-api.polymarket.com'),
@@ -97,6 +104,7 @@ const EnvSchema = z.object({
   WEATHER_MAX_YES_PRICE: NumStr.default('0.97').pipe(z.number().min(0).max(1)),
   WEATHER_MIN_YES_PRICE: NumStr.default('0.03').pipe(z.number().min(0).max(1)),
   WEATHER_PER_MARKET_COOLDOWN_MS: IntStr.default('600000').pipe(z.number().int().nonnegative()),
+  WEATHER_TRADE_DIRECTION: z.enum(['both', 'buy_only', 'sell_only']).default('both'),
 });
 
 export interface Config {
@@ -142,6 +150,7 @@ export interface Config {
     readonly maxSpread: number;
     readonly limit: number;
     readonly requireRewards: boolean;
+    readonly questionRegex?: RegExp;
   };
   readonly smartMoney: {
     readonly dataApiHost: string;
@@ -162,6 +171,7 @@ export interface Config {
     readonly maxYesPrice: number;
     readonly minYesPrice: number;
     readonly perMarketCooldownMs: number;
+    readonly tradeDirection: 'both' | 'buy_only' | 'sell_only';
   };
 }
 
@@ -233,6 +243,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxSpread: parsed.MARKET_DISCOVERY_MAX_SPREAD,
       limit: parsed.MARKET_DISCOVERY_LIMIT,
       requireRewards: parsed.MARKET_DISCOVERY_REQUIRE_REWARDS,
+      ...(parsed.MARKET_DISCOVERY_QUESTION_REGEX
+        ? { questionRegex: new RegExp(parsed.MARKET_DISCOVERY_QUESTION_REGEX, 'i') }
+        : {}),
     },
     smartMoney: {
       dataApiHost: parsed.SMART_MONEY_DATA_API_HOST,
@@ -253,6 +266,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxYesPrice: parsed.WEATHER_MAX_YES_PRICE,
       minYesPrice: parsed.WEATHER_MIN_YES_PRICE,
       perMarketCooldownMs: parsed.WEATHER_PER_MARKET_COOLDOWN_MS,
+      tradeDirection: parsed.WEATHER_TRADE_DIRECTION,
     },
   };
   return cfg;

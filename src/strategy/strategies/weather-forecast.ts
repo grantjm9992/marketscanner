@@ -12,6 +12,22 @@ import {
 import type { WeatherForecastSource } from '../../forecasts/weather/open-meteo.js';
 import { probabilityYes } from '../../forecasts/weather/forecast-prob.js';
 
+export type TradeDirection =
+  /** Allow both BUY YES and SELL YES (default). */
+  | 'both'
+  /**
+   * Only BUY YES. Use this for the maskache2-style long-shot pattern
+   * where the model says YES is wildly underpriced (e.g. market 8c,
+   * model 35c).
+   */
+  | 'buy_only'
+  /**
+   * Only SELL YES. Use this for the swisstony-style near-certainty
+   * pattern where the market overprices YES (e.g. market 99c bid,
+   * model 0.5%).
+   */
+  | 'sell_only';
+
 export interface WeatherForecastParams {
   /** Minimum edge required to place a trade. 0.05 = 5¢ / 5%. */
   readonly minEdge: number;
@@ -25,6 +41,8 @@ export interface WeatherForecastParams {
   readonly minYesPrice: number;
   /** Per-market cooldown after a trade. */
   readonly perMarketCooldownMs: number;
+  /** Restrict to only one side of the trade, or allow both. */
+  readonly tradeDirection: TradeDirection;
 }
 
 export const DEFAULT_WEATHER_PARAMS: WeatherForecastParams = {
@@ -34,6 +52,7 @@ export const DEFAULT_WEATHER_PARAMS: WeatherForecastParams = {
   maxYesPrice: 0.97,
   minYesPrice: 0.03,
   perMarketCooldownMs: 10 * 60_000,
+  tradeDirection: 'both',
 };
 
 interface ParsedCacheEntry {
@@ -132,7 +151,12 @@ export class WeatherForecastStrategy implements Strategy {
     const modelYes = result.probability;
     const out: Signal[] = [];
 
-    if (modelYes - marketYesAsk >= this.params.minEdge) {
+    const allowBuy =
+      this.params.tradeDirection === 'both' || this.params.tradeDirection === 'buy_only';
+    const allowSell =
+      this.params.tradeDirection === 'both' || this.params.tradeDirection === 'sell_only';
+
+    if (allowBuy && modelYes - marketYesAsk >= this.params.minEdge) {
       const req = this.makeOrder(book, 'BUY', marketYesAsk);
       if (req) {
         out.push({ kind: 'PLACE_ORDER', request: req });
@@ -148,7 +172,7 @@ export class WeatherForecastStrategy implements Strategy {
           'weather-forecast: BUY YES (model thinks YES is underpriced)',
         );
       }
-    } else if (marketYesBid - modelYes >= this.params.minEdge) {
+    } else if (allowSell && marketYesBid - modelYes >= this.params.minEdge) {
       const req = this.makeOrder(book, 'SELL', marketYesBid);
       if (req) {
         out.push({ kind: 'PLACE_ORDER', request: req });
