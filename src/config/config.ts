@@ -75,6 +75,28 @@ const EnvSchema = z.object({
   MARKET_DISCOVERY_MIN_SPREAD: NumStr.default('0.01').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_MAX_SPREAD: NumStr.default('0.10').pipe(z.number().nonnegative()),
   MARKET_DISCOVERY_LIMIT: IntStr.default('5').pipe(z.number().int().positive()),
+  MARKET_DISCOVERY_REQUIRE_REWARDS: BoolStr.default('false'),
+
+  // --- SmartMoneyFollower ---
+  SMART_MONEY_DATA_API_HOST: z.string().url().default('https://data-api.polymarket.com'),
+  /** Comma-separated wallet addresses to track. Empty = strategy disabled. */
+  SMART_MONEY_WALLETS: MarketsStr.default(''),
+  SMART_MONEY_POLL_MS: IntStr.default('5000').pipe(z.number().int().positive()),
+  SMART_MONEY_COPY_USD: NumStr.default('10').pipe(z.number().positive()),
+  SMART_MONEY_MIN_SOURCE_USD: NumStr.default('200').pipe(z.number().positive()),
+  SMART_MONEY_MAX_AGE_MS: IntStr.default('30000').pipe(z.number().int().positive()),
+  SMART_MONEY_MAX_DRIFT_CENTS: NumStr.default('0.03').pipe(z.number().nonnegative()),
+  SMART_MONEY_EXECUTION_MODE: z.enum(['taker_market', 'taker_limit_at_touch']).default('taker_limit_at_touch'),
+  SMART_MONEY_PER_MARKET_COOLDOWN_MS: IntStr.default('300000').pipe(z.number().int().nonnegative()),
+
+  // --- Weather forecast strategy ---
+  WEATHER_OPEN_METEO_HOST: z.string().url().default('https://api.open-meteo.com/v1/forecast'),
+  WEATHER_MIN_EDGE: NumStr.default('0.05').pipe(z.number().nonnegative()),
+  WEATHER_ORDER_USD: NumStr.default('20').pipe(z.number().positive()),
+  WEATHER_MAX_ORDER_SIZE: IntStr.default('200').pipe(z.number().int().positive()),
+  WEATHER_MAX_YES_PRICE: NumStr.default('0.97').pipe(z.number().min(0).max(1)),
+  WEATHER_MIN_YES_PRICE: NumStr.default('0.03').pipe(z.number().min(0).max(1)),
+  WEATHER_PER_MARKET_COOLDOWN_MS: IntStr.default('600000').pipe(z.number().int().nonnegative()),
 });
 
 export interface Config {
@@ -119,6 +141,27 @@ export interface Config {
     readonly minSpread: number;
     readonly maxSpread: number;
     readonly limit: number;
+    readonly requireRewards: boolean;
+  };
+  readonly smartMoney: {
+    readonly dataApiHost: string;
+    readonly wallets: readonly string[];
+    readonly pollMs: number;
+    readonly copyUsd: number;
+    readonly minSourceUsd: number;
+    readonly maxAgeMs: number;
+    readonly maxDriftCents: number;
+    readonly executionMode: 'taker_market' | 'taker_limit_at_touch';
+    readonly perMarketCooldownMs: number;
+  };
+  readonly weather: {
+    readonly openMeteoHost: string;
+    readonly minEdge: number;
+    readonly orderUsd: number;
+    readonly maxOrderSize: number;
+    readonly maxYesPrice: number;
+    readonly minYesPrice: number;
+    readonly perMarketCooldownMs: number;
   };
 }
 
@@ -189,6 +232,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       minSpread: parsed.MARKET_DISCOVERY_MIN_SPREAD,
       maxSpread: parsed.MARKET_DISCOVERY_MAX_SPREAD,
       limit: parsed.MARKET_DISCOVERY_LIMIT,
+      requireRewards: parsed.MARKET_DISCOVERY_REQUIRE_REWARDS,
+    },
+    smartMoney: {
+      dataApiHost: parsed.SMART_MONEY_DATA_API_HOST,
+      wallets: parsed.SMART_MONEY_WALLETS,
+      pollMs: parsed.SMART_MONEY_POLL_MS,
+      copyUsd: parsed.SMART_MONEY_COPY_USD,
+      minSourceUsd: parsed.SMART_MONEY_MIN_SOURCE_USD,
+      maxAgeMs: parsed.SMART_MONEY_MAX_AGE_MS,
+      maxDriftCents: parsed.SMART_MONEY_MAX_DRIFT_CENTS,
+      executionMode: parsed.SMART_MONEY_EXECUTION_MODE,
+      perMarketCooldownMs: parsed.SMART_MONEY_PER_MARKET_COOLDOWN_MS,
+    },
+    weather: {
+      openMeteoHost: parsed.WEATHER_OPEN_METEO_HOST,
+      minEdge: parsed.WEATHER_MIN_EDGE,
+      orderUsd: parsed.WEATHER_ORDER_USD,
+      maxOrderSize: parsed.WEATHER_MAX_ORDER_SIZE,
+      maxYesPrice: parsed.WEATHER_MAX_YES_PRICE,
+      minYesPrice: parsed.WEATHER_MIN_YES_PRICE,
+      perMarketCooldownMs: parsed.WEATHER_PER_MARKET_COOLDOWN_MS,
     },
   };
   return cfg;

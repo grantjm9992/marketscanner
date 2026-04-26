@@ -6,6 +6,15 @@ export interface Outcome {
   readonly label: string;
 }
 
+export interface MarketRewards {
+  /** Total $/day across all reward streams on this market. */
+  readonly dailyRateUsd: number;
+  /** Max distance from mid (price units) that still qualifies for rewards. */
+  readonly maxSpread: Price;
+  /** Minimum quote size (shares) to qualify. */
+  readonly minSize: Size;
+}
+
 export interface Market {
   readonly conditionId: string;
   readonly question: string;
@@ -14,6 +23,8 @@ export interface Market {
   readonly minOrderSize: Size;
   readonly endDate: Date;
   readonly category: string;
+  /** Populated when discovery surfaces rewards info; undefined otherwise. */
+  readonly rewards?: MarketRewards;
 }
 
 export interface PriceLevel {

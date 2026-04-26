@@ -21,6 +21,9 @@ interface RawShape {
   bestBid?: number;
   bestAsk?: number;
   spread?: number;
+  clobRewards?: ReadonlyArray<{ rewardsDailyRate?: number }>;
+  rewardsMaxSpread?: number;
+  rewardsMinSize?: number;
 }
 
 function fakeFetcher(pages: ReadonlyArray<readonly RawShape[]>): Fetcher {
@@ -226,5 +229,70 @@ describe('discoverMarkets', () => {
     });
     expect(out[0]?.conditionId).toBe('0xa');
     expect(out[0]?.spread).toBeCloseTo(0.02);
+  });
+
+  it('extracts rewards fields and converts maxSpread from cents to price units', async () => {
+    const pages: RawShape[][] = [
+      [
+        {
+          conditionId: '0xa',
+          endDate: '2026-06-01T00:00:00Z',
+          volume24hr: 1,
+          clobRewards: [{ rewardsDailyRate: 1.5 }, { rewardsDailyRate: 0.5 }],
+          rewardsMaxSpread: 3.5, // cents
+          rewardsMinSize: 25,
+        },
+      ],
+    ];
+    const out = await discoverMarkets({
+      gammaHost: 'https://example.com',
+      filters: {},
+      clock: clock(),
+      logger,
+      fetcher: fakeFetcher(pages),
+    });
+    expect(out[0]?.rewardsDailyRateUsd).toBeCloseTo(2.0); // sum of streams
+    expect(out[0]?.rewardsMaxSpread).toBeCloseTo(0.035); // 3.5¢ -> 0.035
+    expect(out[0]?.rewardsMinSize).toBe(25);
+  });
+
+  it('returns rewardsDailyRateUsd=0 when no clobRewards present', async () => {
+    const pages: RawShape[][] = [
+      [{ conditionId: '0xa', endDate: '2026-06-01T00:00:00Z', volume24hr: 1 }],
+    ];
+    const out = await discoverMarkets({
+      gammaHost: 'https://example.com',
+      filters: {},
+      clock: clock(),
+      logger,
+      fetcher: fakeFetcher(pages),
+    });
+    expect(out[0]?.rewardsDailyRateUsd).toBe(0);
+    expect(out[0]?.rewardsMaxSpread).toBeNull();
+    expect(out[0]?.rewardsMinSize).toBeNull();
+  });
+
+  it('requireRewards filters out markets with rewardsDailyRate === 0', async () => {
+    const pages: RawShape[][] = [
+      [
+        {
+          conditionId: '0xrewarded',
+          endDate: '2026-06-01T00:00:00Z',
+          volume24hr: 1,
+          clobRewards: [{ rewardsDailyRate: 1 }],
+          rewardsMaxSpread: 3,
+          rewardsMinSize: 20,
+        },
+        { conditionId: '0xnone', endDate: '2026-06-01T00:00:00Z', volume24hr: 1 },
+      ],
+    ];
+    const out = await discoverMarkets({
+      gammaHost: 'https://example.com',
+      filters: { requireRewards: true },
+      clock: clock(),
+      logger,
+      fetcher: fakeFetcher(pages),
+    });
+    expect(out.map((m) => m.conditionId)).toEqual(['0xrewarded']);
   });
 });

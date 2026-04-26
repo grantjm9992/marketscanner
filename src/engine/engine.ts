@@ -4,6 +4,7 @@ import type { Fill, Order } from '../domain/order.js';
 import type { Portfolio } from '../domain/portfolio.js';
 import type { Logger } from '../logging/logger.js';
 import type { MarketDataFeed } from '../marketdata/feed.js';
+import type { WalletTrade, WalletTradeFeed } from '../marketdata/wallet-trade-feed.js';
 import type { ExecutionVenue } from '../execution/venue.js';
 import type { RiskManager } from '../risk/risk-manager.js';
 import type { Strategy } from '../strategy/strategy.js';
@@ -41,6 +42,11 @@ export interface EngineOptions {
   readonly clock: Clock;
   readonly markets: ReadonlyMap<string, Market>; // marketId -> Market
   readonly shutdownGraceMs?: number; // how long to wait for cancels on stop
+  /**
+   * Optional wallet-activity feed. Engine subscribes only when both this
+   * is provided and the strategy implements `onWalletTrade`.
+   */
+  readonly walletFeed?: WalletTradeFeed;
 }
 
 /**
@@ -76,6 +82,13 @@ export class Engine {
     this.opts.feed.onBookUpdate((b) => this.handleBookUpdate(b));
     this.opts.feed.onError((e) => this.opts.logger.error({ err: e }, 'engine: feed error'));
 
+    if (this.opts.walletFeed && typeof this.opts.strategy.onWalletTrade === 'function') {
+      this.opts.walletFeed.onTrade((t) => this.handleWalletTrade(t));
+      this.opts.walletFeed.onError((e) =>
+        this.opts.logger.error({ err: e }, 'engine: wallet feed error'),
+      );
+    }
+
     for (const market of this.opts.markets.values()) {
       // eslint-disable-next-line no-await-in-loop
       await this.opts.strategy.onStart(this.contextFor(market));
@@ -83,6 +96,10 @@ export class Engine {
 
     await this.opts.feed.subscribe([...this.opts.markets.keys()]);
     await this.opts.feed.start();
+    if (this.opts.walletFeed && typeof this.opts.strategy.onWalletTrade === 'function') {
+      await this.opts.walletFeed.start();
+      this.opts.logger.info('engine: wallet feed started');
+    }
     this.opts.logger.info({ strategy: this.opts.strategy.name }, 'engine: started');
   }
 
@@ -95,6 +112,14 @@ export class Engine {
       await this.opts.feed.stop();
     } catch (err) {
       this.opts.logger.error({ err }, 'engine: feed.stop failed');
+    }
+
+    if (this.opts.walletFeed) {
+      try {
+        await this.opts.walletFeed.stop();
+      } catch (err) {
+        this.opts.logger.error({ err }, 'engine: walletFeed.stop failed');
+      }
     }
 
     try {
@@ -169,6 +194,32 @@ export class Engine {
         this.opts.risk.halt('strategy.onFill threw');
       }
     }
+  }
+
+  private handleWalletTrade(trade: WalletTrade): void {
+    if (this.stopping) return;
+    if (this.opts.risk.isHalted()) return;
+
+    const market = this.opts.markets.get(trade.marketId);
+    if (!market) {
+      // Trade on a market we don't track. Strategies can't act on it
+      // (they have no Market metadata), so drop silently. Could be
+      // upgraded later to auto-add markets we see smart money trade.
+      return;
+    }
+
+    const onWalletTrade = this.opts.strategy.onWalletTrade?.bind(this.opts.strategy);
+    if (!onWalletTrade) return;
+
+    let signals: readonly Signal[];
+    try {
+      signals = onWalletTrade(trade, this.contextFor(market));
+    } catch (err) {
+      this.opts.logger.error({ err }, 'engine: strategy.onWalletTrade threw');
+      this.opts.risk.halt('strategy.onWalletTrade threw');
+      return;
+    }
+    for (const sig of signals) void this.dispatchSignal(sig);
   }
 
   private async dispatchSignal(sig: Signal): Promise<void> {

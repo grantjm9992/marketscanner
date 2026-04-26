@@ -144,6 +144,74 @@ If a strategy looks like it's printing money in paper mode, **the default assump
 4. Scale to $100 overnight. Audit the trade log in the morning.
 5. Only then consider scaling. If live PnL diverges meaningfully from paper under the same conditions, **stop and find out why**.
 
+## Strategies
+
+Four are bundled. Pick one via `STRATEGY_NAME` in `.env`.
+
+### `wide-spread-market-maker` (default)
+
+A passive maker. Posts BUY at `bestBid+tick` and SELL at `bestAsk-tick`, sized at `quoteSize`. Uses hysteresis + minimum quote lifetime to avoid millisecond-scale churn. Doesn't hunt edges; provides liquidity and tries to earn the spread. Useful as a pipeline validator and as a baseline.
+
+### `smart-money-follower`
+
+An aggressive taker. Subscribes to a curated watchlist of Polygon wallet addresses via Polymarket's public Data API. When a watched wallet places a trade above `SMART_MONEY_MIN_SOURCE_USD` notional, the strategy buffers the signal, then on the next book update for that market emits a same-side LIMIT (or MARKET) for `SMART_MONEY_COPY_USD`, gated by:
+
+- **freshness** — drops signals older than `SMART_MONEY_MAX_AGE_MS`,
+- **drift** — skips if the book has moved more than `SMART_MONEY_MAX_DRIFT_CENTS` from the source price,
+- **per-(wallet × market) cooldown** so one chatty wallet doesn't dominate the order rate.
+
+Critical caveats:
+
+1. **Wallet selection is the entire edge.** Don't paste the leaderboard. Filter by *realized* PnL on closed positions, not by rank. The Hermes-style trap (`rn1`) shows that $2.68M of unrealized losses can sit behind a top-7 ranking.
+2. **This is conviction stacking, not latency arbitrage.** By the time the Data API surfaces a trade you're 5–30s behind. Don't expect to get the same fill price the smart wallet got.
+3. **PnL must be tracked separately** from any maker strategy — they have opposite risk profiles. Don't blend their numbers.
+
+Run with both, in parallel, in two separate processes pointing at the same Postgres if you want side-by-side comparison.
+
+### `rewarded-market-maker`
+
+A maker tuned to qualify for Polymarket's CLOB rewards program. Same shape as WSMM but with two key differences:
+
+1. **Quotes near mid, not at the touch.** Posts BUY at `max(bestBid+tick, mid - rewardsMaxSpread + safety)` and the symmetric SELL. The goal is to sit inside the `rewardsMaxSpread` band so the daily rewards subsidy applies.
+2. **Quote size = `max(fallbackQuoteSize, market.rewards.minSize)`.** Polymarket only counts qualifying makers above `minSize`.
+
+Edge model: `rewards $/day × your share of qualifying volume − adverse-selection cost`. The first term is structurally positive — you're paid to post quotes regardless of fill PnL. The second term is the same predator that eats every maker. Whether the net is positive depends on how crowded the rewarded markets are with other makers.
+
+Two non-obvious things to know:
+- This strategy **does nothing on markets without rewards data**. Always pair with `MARKET_DISCOVERY_REQUIRE_REWARDS=true` so discovery only surfaces qualifying markets.
+- It quotes near-mid, which is *more* adversely-selected than WSMM. Don't be surprised if fill PnL is worse than WSMM on the same markets — the rewards drip is supposed to make up the difference. Track both PnL and accumulated rewards separately to know if it's working.
+
+### `weather-forecast`
+
+Forecast-based mispricing on weather markets — the closest thing to actual model-driven alpha in the bundle. For each tracked market on each book update:
+
+1. Parse the title (`Will the highest temperature in Seoul exceed 30°C on 2026-04-30?`) into a structured question.
+2. Look up the OpenMeteo forecast for that (city, date) — free, no API key, cached for 1h.
+3. Compute model `P(YES)` from the forecast mean and a horizon-dependent stddev (1-day = 1.5°C, 7-day = 4.5°C).
+4. Compare to market YES price; if `|model − market| ≥ minEdge` and the market price is inside `[minYesPrice, maxYesPrice]`, take the favorable side at the touch.
+
+Why this is different from the other three: there's an external source of truth (the forecast) that the market doesn't fully price in. Maker strategies fight for spread; arb is rare; this is just *a better model than the market has*.
+
+Phase 1 caveats:
+
+- **Hardcoded city dictionary.** ~25 major cities under `src/forecasts/weather/cities.ts`. Markets in unsupported cities are no-ops. Phase 2 will geocode on demand.
+- **7-day forecast horizon max.** Longer-dated markets are skipped — forecast skill drops fast past a week.
+- **Fixed-fraction sizing.** No Kelly, no edge-scaling. Set `WEATHER_ORDER_USD` to your comfort level.
+- **`WEATHER_MAX_YES_PRICE=0.97` by default.** At 99¢ NO, one wrong call wipes out 99 winners. Calibration is everything; staying away from the extremes is the safe failure mode until you know your model is reliable.
+- **Conservative stddev.** Overstating forecast uncertainty makes the strategy stake less. Tune downward (i.e. tighten in `forecast-prob.ts`) once you've calibrated against real resolution outcomes.
+
+To run:
+
+```bash
+STRATEGY_NAME=weather-forecast
+# Either pin some weather markets explicitly:
+STRATEGY_MARKETS=0xCONDITION_ID_1,0xCONDITION_ID_2
+# Or let discovery surface them:
+MARKET_DISCOVERY_ENABLED=true
+```
+
+Discovery doesn't currently filter for "weather" markets specifically — the strategy itself silently no-ops on non-weather titles. If you find weather-market discovery worth doing, it's a category-string filter on Gamma's `events[].slug` (e.g. include slugs containing "temperature").
+
 ## Inspecting the running bot
 
 The trade log, snapshots, positions, and daily P&L go into either SQLite (default, single file at `./data/bot.db`) or Postgres (set `DATABASE_KIND=postgres` and `DATABASE_URL=...`). Same store interface either way; same queries work against both.

@@ -21,6 +21,11 @@ import { SnapshotRecorder } from './marketdata/snapshot-recorder.js';
 import { discoverMarkets } from './marketdata/market-discovery.js';
 import { DefaultRiskManager } from './risk/risk-manager.js';
 import { WideSpreadMarketMaker } from './strategy/strategies/wide-spread-market-maker.js';
+import { SmartMoneyFollower } from './strategy/strategies/smart-money-follower.js';
+import { RewardedMarketMaker } from './strategy/strategies/rewarded-market-maker.js';
+import { WeatherForecastStrategy } from './strategy/strategies/weather-forecast.js';
+import { OpenMeteoForecastSource } from './forecasts/weather/open-meteo.js';
+import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
 import type { Strategy } from './strategy/strategy.js';
 import type { Market } from './domain/market.js';
 import { price, size, usd } from './domain/money.js';
@@ -173,7 +178,30 @@ async function main(): Promise<void> {
   }
 
   // --- Strategy ---
-  const strategy = buildStrategy(config.strategy.name, config.strategy.params);
+  const strategy = buildStrategy(config, logger);
+
+  // --- Wallet feed (optional, only when strategy uses it AND wallets are configured) ---
+  let walletFeed: import('./marketdata/wallet-trade-feed.js').WalletTradeFeed | undefined;
+  if (
+    typeof strategy.onWalletTrade === 'function' &&
+    config.smartMoney.wallets.length > 0 &&
+    !isBacktest
+  ) {
+    walletFeed = new PolymarketWalletTradeFeed({
+      dataApiHost: config.smartMoney.dataApiHost,
+      wallets: config.smartMoney.wallets,
+      pollIntervalMs: config.smartMoney.pollMs,
+      logger,
+    });
+    logger.info(
+      { count: config.smartMoney.wallets.length, pollMs: config.smartMoney.pollMs },
+      'main: wallet trade feed configured',
+    );
+  } else if (typeof strategy.onWalletTrade === 'function') {
+    logger.warn(
+      'main: strategy supports wallet trades but SMART_MONEY_WALLETS is empty (or backtest mode); strategy will produce no signals',
+    );
+  }
 
   // --- Engine ---
   const engine = new Engine({
@@ -185,6 +213,7 @@ async function main(): Promise<void> {
     logger,
     clock,
     markets,
+    ...(walletFeed ? { walletFeed } : {}),
   });
 
   // Graceful shutdown.
@@ -293,6 +322,10 @@ async function loadMarkets(
 ): Promise<ReadonlyMap<string, Market>> {
   const ids = new Set<string>(config.strategy.markets);
 
+  // Map of conditionId -> rewards info, populated from discovery so the
+  // RewardedMarketMaker strategy can read it via Market.rewards.
+  const rewardsByMarketId = new Map<string, import('./domain/market.js').MarketRewards>();
+
   if (config.marketDiscovery.enabled) {
     const discovered = await discoverMarkets({
       gammaHost: config.marketDiscovery.gammaHost,
@@ -302,14 +335,28 @@ async function loadMarkets(
         minDaysToResolution: config.marketDiscovery.minDaysToResolution,
         minSpread: config.marketDiscovery.minSpread,
         maxSpread: config.marketDiscovery.maxSpread,
+        requireRewards: config.marketDiscovery.requireRewards,
         limit: config.marketDiscovery.limit,
       },
       clock,
       logger,
     });
-    for (const m of discovered) ids.add(m.conditionId);
+    for (const m of discovered) {
+      ids.add(m.conditionId);
+      if (m.rewardsDailyRateUsd > 0 && m.rewardsMaxSpread !== null && m.rewardsMinSize !== null) {
+        rewardsByMarketId.set(m.conditionId, {
+          dailyRateUsd: m.rewardsDailyRateUsd,
+          maxSpread: price(m.rewardsMaxSpread),
+          minSize: size(m.rewardsMinSize),
+        });
+      }
+    }
     logger.info(
-      { discovered: discovered.length, total: ids.size },
+      {
+        discovered: discovered.length,
+        withRewards: rewardsByMarketId.size,
+        total: ids.size,
+      },
       'main: market discovery merged with explicit STRATEGY_MARKETS',
     );
   }
@@ -322,9 +369,6 @@ async function loadMarkets(
     try {
       // eslint-disable-next-line no-await-in-loop
       const raw = (await client.getMarket(conditionId)) as RawMarket | { error?: string };
-      // The clob-client doesn't always throw on 4xx — it can return
-      // {error: "..."}. Fail loudly so the bot doesn't silently run with
-      // a half-broken market that has no outcomes to subscribe to.
       if ('error' in raw && raw.error) {
         throw new Error(`CLOB rejected market ${conditionId}: ${String(raw.error)}`);
       }
@@ -334,7 +378,8 @@ async function loadMarkets(
           `Market ${conditionId} returned no outcomes. Likely an invalid condition ID — verify with the Gamma API or enable MARKET_DISCOVERY_ENABLED=true.`,
         );
       }
-      out.set(conditionId, normalizeMarket(conditionId, raw as RawMarket));
+      const rewards = rewardsByMarketId.get(conditionId);
+      out.set(conditionId, normalizeMarket(conditionId, raw as RawMarket, rewards));
     } catch (err) {
       logger.error({ err, conditionId }, 'main: failed to fetch market metadata');
       throw err;
@@ -352,7 +397,11 @@ interface RawMarket {
   tokens?: ReadonlyArray<{ token_id: string; outcome: string }>;
 }
 
-function normalizeMarket(conditionId: string, raw: RawMarket): Market {
+function normalizeMarket(
+  conditionId: string,
+  raw: RawMarket,
+  rewards?: import('./domain/market.js').MarketRewards,
+): Market {
   return {
     conditionId,
     question: raw.question ?? '',
@@ -361,15 +410,41 @@ function normalizeMarket(conditionId: string, raw: RawMarket): Market {
     minOrderSize: size(Number(raw.minimum_order_size ?? 5)),
     endDate: raw.end_date_iso ? new Date(raw.end_date_iso) : new Date('2099-01-01'),
     category: raw.category ?? 'other',
+    ...(rewards ? { rewards } : {}),
   };
 }
 
-function buildStrategy(name: string, _params: Readonly<Record<string, unknown>>): Strategy {
-  switch (name) {
+function buildStrategy(config: Config, logger: import('./logging/logger.js').Logger): Strategy {
+  switch (config.strategy.name) {
     case 'wide-spread-market-maker':
       return new WideSpreadMarketMaker();
+    case 'smart-money-follower':
+      return new SmartMoneyFollower({
+        copyNotionalUsd: config.smartMoney.copyUsd,
+        minSourceNotionalUsd: config.smartMoney.minSourceUsd,
+        maxAgeMs: config.smartMoney.maxAgeMs,
+        maxPriceDriftCents: config.smartMoney.maxDriftCents,
+        executionMode: config.smartMoney.executionMode,
+        perMarketCooldownMs: config.smartMoney.perMarketCooldownMs,
+      });
+    case 'rewarded-market-maker':
+      return new RewardedMarketMaker();
+    case 'weather-forecast': {
+      const forecasts = new OpenMeteoForecastSource({
+        host: config.weather.openMeteoHost,
+        logger,
+      });
+      return new WeatherForecastStrategy(forecasts, {
+        minEdge: config.weather.minEdge,
+        orderUsd: config.weather.orderUsd,
+        maxOrderSize: config.weather.maxOrderSize,
+        maxYesPrice: config.weather.maxYesPrice,
+        minYesPrice: config.weather.minYesPrice,
+        perMarketCooldownMs: config.weather.perMarketCooldownMs,
+      });
+    }
     default:
-      throw new Error(`Unknown strategy: ${name}`);
+      throw new Error(`Unknown strategy: ${config.strategy.name}`);
   }
 }
 
