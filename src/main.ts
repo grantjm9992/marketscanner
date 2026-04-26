@@ -33,6 +33,7 @@ import {
 } from './strategy/strategies/rewarded-market-maker.js';
 import { WeatherForecastStrategy } from './strategy/strategies/weather-forecast.js';
 import { OpenMeteoForecastSource } from './forecasts/weather/open-meteo.js';
+import { GeocodeCache } from './forecasts/weather/geocode.js';
 import { PolymarketWalletTradeFeed } from './marketdata/polymarket-wallet-trade-feed.js';
 import { MarketRefresher } from './marketdata/market-refresher.js';
 import type { Strategy } from './strategy/strategy.js';
@@ -507,15 +508,20 @@ function buildStrategy(config: Config, logger: import('./logging/logger.js').Log
         host: config.weather.openMeteoHost,
         logger,
       });
-      return new WeatherForecastStrategy(forecasts, {
-        minEdge: config.weather.minEdge,
-        orderUsd: config.weather.orderUsd,
-        maxOrderSize: config.weather.maxOrderSize,
-        maxYesPrice: config.weather.maxYesPrice,
-        minYesPrice: config.weather.minYesPrice,
-        perMarketCooldownMs: config.weather.perMarketCooldownMs,
-        tradeDirection: config.weather.tradeDirection,
-      });
+      const geocodeCache = new GeocodeCache({ logger });
+      return new WeatherForecastStrategy(
+        forecasts,
+        {
+          minEdge: config.weather.minEdge,
+          orderUsd: config.weather.orderUsd,
+          maxOrderSize: config.weather.maxOrderSize,
+          maxYesPrice: config.weather.maxYesPrice,
+          minYesPrice: config.weather.minYesPrice,
+          perMarketCooldownMs: config.weather.perMarketCooldownMs,
+          tradeDirection: config.weather.tradeDirection,
+        },
+        geocodeCache,
+      );
     }
     default:
       throw new Error(`Unknown strategy: ${config.strategy.name}`);
